@@ -128,6 +128,17 @@ class AgentInfo:
     gpu_index: int       # Which GPU (-1 if none)
     uptime_seconds: float # How long running
     status: str          # running/sleeping etc
+    agent_type: str = ""          # "推理服务" / "CLI工具" / "SDK应用" / "框架" / "Agent"
+    model_name: str = ""          # Detected model name from cmdline/env
+    children_count: int = 0       # Number of child processes
+    total_cpu_percent: float = 0.0  # CPU% including children
+    total_memory_mb: float = 0.0   # Memory including children
+    thread_count: int = 0
+    io_read_mb: float = 0.0       # Cumulative IO read in MB
+    io_write_mb: float = 0.0      # Cumulative IO write in MB
+    connections_count: int = 0    # Number of network connections
+    listen_ports: list = field(default_factory=list)  # Ports this agent listens on
+    mem_trend_mb_per_min: float = 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -177,6 +188,9 @@ class SystemCollector:
         self._gpu_util_history: dict[int, _HistoryBuffer] = {}
         self._net_send_history = _HistoryBuffer()
         self._net_recv_history = _HistoryBuffer()
+
+        # Agent memory trend tracking: pid -> [(timestamp, mem_mb)]
+        self._agent_mem_history: dict[int, list[tuple[float, float]]] = {}
 
         # 预热 psutil：第一次 cpu_percent(interval=0) 返回 0，需要先调一次
         psutil.cpu_percent(interval=0)
@@ -567,6 +581,68 @@ class SystemCollector:
     # Catch-all: any python process with "agent" in the cmdline.
     _AGENT_PYTHON_PATTERN = re.compile(r"agent", re.IGNORECASE)
 
+    @staticmethod
+    def _classify_agent_type(cmdline_str: str) -> str:
+        """Classify agent type based on command line."""
+        # 推理服务
+        for kw in ("vllm", "text-generation", "ollama", "lmstudio"):
+            if kw in cmdline_str.lower():
+                return "推理服务"
+        if "--serve" in cmdline_str or "--server" in cmdline_str:
+            return "推理服务"
+        # CLI工具 (claude without serve)
+        if "claude" in cmdline_str.lower() and "--serve" not in cmdline_str and "--server" not in cmdline_str:
+            return "CLI工具"
+        # SDK应用
+        for kw in ("openai", "anthropic", "langchain", "llamaindex", "dspy"):
+            if kw in cmdline_str.lower():
+                return "SDK应用"
+        # 框架
+        for kw in ("autogen", "crewai", "metagpt"):
+            if kw in cmdline_str.lower():
+                return "框架"
+        return "Agent"
+
+    @staticmethod
+    def _detect_model_name(cmdline_str: str) -> str:
+        """Detect model name from command line arguments."""
+        # Try to find --model, --model-name, --model_name, -m followed by a value
+        match = re.search(r'(?:--model(?:[-_]name)?|-m)\s+(\S+)', cmdline_str)
+        if match:
+            return match.group(1)
+        # Check common model name patterns
+        for pattern in (
+            r'(gpt-4[o0-9a-z\-]*)',
+            r'(gpt-3\.5[a-z\-]*)',
+            r'(claude[a-z0-9\-\.]*)',
+            r'(llama[a-z0-9\-\.]*)',
+            r'(qwen[a-z0-9\-\.]*)',
+            r'(mistral[a-z0-9\-\.]*)',
+            r'(gemma[a-z0-9\-\.]*)',
+            r'(deepseek[a-z0-9\-\.]*)',
+            r'(yi[a-z0-9\-\.]*)',
+            r'(baichuan[a-z0-9\-\.]*)',
+            r'(chatglm[a-z0-9\-\.]*)',
+            r'(vicuna[a-z0-9\-\.]*)',
+            r'(phi[a-z0-9\-\.]*)',
+        ):
+            m = re.search(pattern, cmdline_str, re.IGNORECASE)
+            if m:
+                return m.group(1)
+        return ""
+
+    def get_agent_memory_trend(self, pid: int) -> float:
+        """Return memory change rate in MB/min. Positive = growing."""
+        history = self._agent_mem_history.get(pid, [])
+        if len(history) < 10:
+            return 0.0
+        oldest_time, oldest_mem = history[0]
+        newest_time, newest_mem = history[-1]
+        dt_min = (newest_time - oldest_time) / 60
+        if dt_min <= 0:
+            return 0.0
+        return (newest_mem - oldest_mem) / dt_min
+
     def collect_agents(self) -> list[AgentInfo]:
         """Scan running processes and return detected AI agent processes."""
         now = time.time()
@@ -633,6 +709,69 @@ class SystemCollector:
 
                 gpu_mem, gpu_idx = gpu_info_by_pid.get(pid, (0.0, -1))
 
+                # Agent type classification
+                agent_type = self._classify_agent_type(cmdline)
+
+                # Model name detection (use original cmdline, not lowered)
+                model_name = self._detect_model_name(cmdline)
+
+                # Child processes, total CPU/memory
+                children_count = 0
+                total_cpu = cpu_pct
+                total_mem = memory_mb
+                try:
+                    p = psutil.Process(pid)
+                    children = p.children(recursive=True)
+                    children_count = len(children)
+                    for child in children:
+                        try:
+                            total_cpu += child.cpu_percent(interval=0)
+                            child_mem = child.memory_info()
+                            if child_mem:
+                                total_mem += child_mem.rss / (1024 * 1024)
+                        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                            continue
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    pass
+
+                # Thread count
+                thread_count = 0
+                try:
+                    thread_count = psutil.Process(pid).num_threads()
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    pass
+
+                # IO counters (Linux only)
+                io_read_mb = 0.0
+                io_write_mb = 0.0
+                try:
+                    io = psutil.Process(pid).io_counters()
+                    io_read_mb = io.read_bytes / (1024 * 1024)
+                    io_write_mb = io.write_bytes / (1024 * 1024)
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess, AttributeError):
+                    pass
+
+                # Network connections
+                connections_count = 0
+                listen_ports: list[int] = []
+                try:
+                    conns = psutil.Process(pid).connections()
+                    connections_count = len(conns)
+                    for conn in conns:
+                        if conn.status == "LISTEN" and conn.laddr:
+                            listen_ports.append(conn.laddr.port)
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    pass
+
+                # Memory trend tracking
+                if pid not in self._agent_mem_history:
+                    self._agent_mem_history[pid] = []
+                self._agent_mem_history[pid].append((now, memory_mb))
+                # Keep last 60 entries
+                self._agent_mem_history[pid] = self._agent_mem_history[pid][-60:]
+
+                mem_trend = self.get_agent_memory_trend(pid)
+
                 agents.append(AgentInfo(
                     pid=pid,
                     name=matched_name,
@@ -644,11 +783,28 @@ class SystemCollector:
                     gpu_index=gpu_idx,
                     uptime_seconds=round(uptime, 1),
                     status=status,
+                    agent_type=agent_type,
+                    model_name=model_name,
+                    children_count=children_count,
+                    total_cpu_percent=total_cpu,
+                    total_memory_mb=round(total_mem, 2),
+                    thread_count=thread_count,
+                    io_read_mb=round(io_read_mb, 2),
+                    io_write_mb=round(io_write_mb, 2),
+                    connections_count=connections_count,
+                    listen_ports=listen_ports,
+                    mem_trend_mb_per_min=round(mem_trend, 4),
                 ))
             except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                 continue
             except Exception:
                 continue
+
+        # Clean up stale PIDs from memory history
+        active_pids = {a.pid for a in agents}
+        stale = [pid for pid in self._agent_mem_history if pid not in active_pids]
+        for pid in stale:
+            del self._agent_mem_history[pid]
 
         # Sort by GPU memory desc, then CPU desc.
         agents.sort(key=lambda a: (-a.gpu_memory_mb, -a.cpu_percent))
@@ -801,6 +957,17 @@ class SystemCollector:
                     "gpu_index": a.gpu_index,
                     "uptime_seconds": a.uptime_seconds,
                     "status": a.status,
+                    "agent_type": a.agent_type,
+                    "model_name": a.model_name,
+                    "children_count": a.children_count,
+                    "total_cpu_percent": a.total_cpu_percent,
+                    "total_memory_mb": a.total_memory_mb,
+                    "thread_count": a.thread_count,
+                    "io_read_mb": a.io_read_mb,
+                    "io_write_mb": a.io_write_mb,
+                    "connections_count": a.connections_count,
+                    "listen_ports": a.listen_ports,
+                    "mem_trend_mb_per_min": a.mem_trend_mb_per_min,
                 }
                 for a in agents
             ],

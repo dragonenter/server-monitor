@@ -1222,9 +1222,13 @@ class MonitorMainWindow(QMainWindow):
         agent_text_parts = []
         for a in agents[:8]:  # show max 8
             gpu_str = f"{a['gpu_memory_mb']:.0f}MB" if a['gpu_memory_mb'] > 0 else "—"
+            model = a.get('model_name', '')
+            model_str = f" ({model})" if model else ""
+            type_str = a.get('agent_type', '')
             agent_text_parts.append(
-                f"{a['name']}  ·  CPU {a['cpu_percent']:.1f}%  ·  "
-                f"内存 {a['memory_mb']:.0f}MB  ·  GPU {gpu_str}"
+                f"{a['name']}{model_str}  [{type_str}]  ·  CPU {a['cpu_percent']:.1f}%  ·  "
+                f"内存 {a['memory_mb']:.0f}MB  ·  GPU {gpu_str}  ·  "
+                f"线程 {a.get('thread_count', 0)}  子进程 {a.get('children_count', 0)}"
             )
         ov.agent_list_label.setText("\n".join(agent_text_parts) if agent_text_parts else "无运行中的 Agent")
 
