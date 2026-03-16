@@ -81,6 +81,43 @@ class ProcessInfo:
     status: str = ""
 
 
+@dataclass
+class AgentInfo:
+    """检测到的 AI Agent 进程."""
+    pid: int = 0
+    name: str = ""           # 显示名 (e.g. "Claude Code")
+    process_name: str = ""   # 实际进程名
+    cmdline: str = ""        # 命令行（截断200字符）
+    cpu_percent: float = 0.0
+    memory_mb: float = 0.0
+    gpu_memory_mb: float = 0.0
+    gpu_index: int = -1
+    uptime_seconds: float = 0.0
+    status: str = ""
+
+
+# Agent 识别模式: (命令行关键词, 显示名)
+_AGENT_PATTERNS: list[tuple[str, str]] = [
+    ("claude", "Claude Code"),
+    ("anthropic", "Anthropic SDK"),
+    ("langchain", "LangChain"),
+    ("langgraph", "LangGraph"),
+    ("autogen", "AutoGen"),
+    ("crewai", "CrewAI"),
+    ("crew", "CrewAI"),
+    ("openai", "OpenAI Agent"),
+    ("llamaindex", "LlamaIndex"),
+    ("dspy", "DSPy"),
+    ("metagpt", "MetaGPT"),
+    ("chatglm", "ChatGLM"),
+    ("vllm", "vLLM"),
+    ("text-generation", "TGI"),
+    ("ollama", "Ollama"),
+    ("lmstudio", "LM Studio"),
+    ("transformers", "Transformers"),
+]
+
+
 class MetricsCollector:
     def __init__(self):
         import psutil
@@ -436,6 +473,106 @@ class MetricsCollector:
                 continue
         procs.sort(key=lambda p: p.gpu_memory, reverse=True)
         return procs
+
+    def collect_agents(self) -> list[AgentInfo]:
+        """识别系统中运行的 AI Agent 进程."""
+        ps = self.psutil
+        gpu_procs = self.collect_gpu_processes()
+        gpu_mem_by_pid: dict[int, tuple[float, int]] = {}  # pid -> (mem_mb, gpu_idx)
+        for gp in gpu_procs:
+            existing = gpu_mem_by_pid.get(gp.pid, (0.0, gp.gpu_index))
+            gpu_mem_by_pid[gp.pid] = (existing[0] + gp.gpu_memory, gp.gpu_index)
+
+        agents: list[AgentInfo] = []
+        seen_pids: set[int] = set()
+
+        for proc in ps.process_iter(["pid", "name", "cpu_percent", "memory_info", "status", "create_time", "cmdline"]):
+            try:
+                info = proc.info
+                pid = info["pid"]
+                if pid in seen_pids:
+                    continue
+                cmdline_list = info.get("cmdline") or []
+                cmdline_str = " ".join(cmdline_list).lower()
+                if not cmdline_str:
+                    continue
+
+                matched_name = None
+                for keyword, display_name in _AGENT_PATTERNS:
+                    if keyword in cmdline_str:
+                        matched_name = display_name
+                        break
+                # 通用匹配：python 进程命令行含 "agent"
+                if not matched_name and "python" in (info["name"] or "").lower():
+                    if "agent" in cmdline_str:
+                        matched_name = "AI Agent"
+
+                if not matched_name:
+                    continue
+
+                seen_pids.add(pid)
+                mem_info = info.get("memory_info")
+                mem_mb = (mem_info.rss / (1024 * 1024)) if mem_info else 0.0
+                create_time = info.get("create_time") or time.time()
+                uptime = time.time() - create_time
+                gpu_mem, gpu_idx = gpu_mem_by_pid.get(pid, (0.0, -1))
+
+                agents.append(AgentInfo(
+                    pid=pid,
+                    name=matched_name,
+                    process_name=info["name"] or "",
+                    cmdline=" ".join(cmdline_list)[:200],
+                    cpu_percent=info["cpu_percent"] or 0.0,
+                    memory_mb=mem_mb,
+                    gpu_memory_mb=gpu_mem,
+                    gpu_index=gpu_idx,
+                    uptime_seconds=uptime,
+                    status=info["status"] or "",
+                ))
+            except (ps.NoSuchProcess, ps.AccessDenied, ps.ZombieProcess):
+                continue
+
+        agents.sort(key=lambda a: (a.gpu_memory_mb, a.cpu_percent), reverse=True)
+        return agents
+
+    def calculate_capacity(self) -> dict:
+        """计算还能并行运行多少个 Agent."""
+        ps = self.psutil
+        agents = self.collect_agents()
+
+        # RAM
+        vm = ps.virtual_memory()
+        ram_free_mb = vm.available / (1024 * 1024)
+        max_by_ram = int(ram_free_mb / 2048)  # 2GB per agent
+
+        # CPU
+        cpu_count = ps.cpu_count(logical=True) or 1
+        cpu_usage = ps.cpu_percent(interval=0)
+        cpu_free = cpu_count * (1 - cpu_usage / 100)
+        max_by_cpu = int(cpu_free / 2)  # 2 cores per agent
+
+        # GPU
+        gpu_free_mb = 0.0
+        max_by_gpu = 999
+        gpus = self.collect_gpu()
+        if gpus:
+            for gpu in gpus:
+                free = gpu.memory_total - gpu.memory_used
+                gpu_free_mb += free
+            max_by_gpu = int(gpu_free_mb / 4096)  # 4GB per agent
+
+        recommended = min(max_by_ram, max_by_cpu, max_by_gpu)
+
+        return {
+            "running_agent_count": len(agents),
+            "recommended_parallel": max(0, recommended),
+            "max_agents_by_gpu": max_by_gpu if gpus else -1,
+            "max_agents_by_ram": max_by_ram,
+            "max_agents_by_cpu": max_by_cpu,
+            "gpu_free_mb": gpu_free_mb,
+            "ram_free_mb": ram_free_mb,
+            "cpu_free_cores": cpu_free,
+        }
 
     def get_cpu_history(self) -> list[float]:
         return list(self._cpu_history)

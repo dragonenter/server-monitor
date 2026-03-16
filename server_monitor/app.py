@@ -227,6 +227,10 @@ class ServerMonitorApp(App):
                         yield Label("", id="mem-text", classes="metric-text")
                         yield SmoothChart(id="mem-chart", classes="chart-box")
 
+                    with Vertical(classes="metric-card-full", id="agent-card"):
+                        yield Label("AI Agent", classes="section-title")
+                        yield Label("", id="agent-text", classes="metric-text")
+
                     with Vertical(classes="metric-card-full", id="gpu-card"):
                         yield Label("显卡", classes="section-title")
                         yield Label("", id="gpu-text", classes="metric-text")
@@ -288,7 +292,10 @@ class ServerMonitorApp(App):
             procs = self.collector.collect_processes(limit=30)
 
             gpu_procs = self.collector.collect_gpu_processes()
+            agents = self.collector.collect_agents()
+            capacity = self.collector.calculate_capacity()
 
+            self._update_agents(agents, capacity)
             self._update_cpu(cpu)
             self._update_memory(mem)
             self._update_gpu_overview(gpus, gpu_procs)
@@ -311,6 +318,47 @@ class ServerMonitorApp(App):
             self.query_one("#header-bar", Label).update(
                 f"  {hostname}  ·  监控时长 {uptime}  ·  {now}"
             )
+        except NoMatches:
+            pass
+
+    # ------------------------------------------------------------------
+    # AI Agent
+    # ------------------------------------------------------------------
+
+    def _update_agents(self, agents, capacity) -> None:
+        try:
+            count = len(agents)
+            parallel = capacity.get("recommended_parallel", 0)
+            gpu_free = capacity.get("gpu_free_mb", 0)
+            ram_free = capacity.get("ram_free_mb", 0)
+
+            lines = [
+                f"  运行中: [{pct_color(0)}]{count}[/{pct_color(0)}] 个 Agent  ·  "
+                f"可并行: [#0A84FF]+{parallel}[/#0A84FF]  ·  "
+                f"空闲显存: {gpu_free:.0f}MB  ·  空闲内存: {ram_free:.0f}MB"
+            ]
+
+            if agents:
+                lines.append("")
+                lines.append(
+                    f"  {'名称':<18s} {'PID':<10s} {'CPU%':>6s}  "
+                    f"{'内存':>8s}  {'GPU显存':>8s}  {'运行时长':>10s}"
+                )
+                lines.append(f"  {'─'*18} {'─'*10} {'─'*6}  {'─'*8}  {'─'*8}  {'─'*10}")
+                for a in agents[:10]:
+                    h, rem = divmod(int(a.uptime_seconds), 3600)
+                    m, s = divmod(rem, 60)
+                    uptime_str = f"{h}h{m:02d}m" if h > 0 else f"{m}m{s:02d}s"
+                    gpu_str = f"{a.gpu_memory_mb:.0f}MB" if a.gpu_memory_mb > 0 else "—"
+                    cc = pct_color(a.cpu_percent)
+                    lines.append(
+                        f"  {a.name:<18s} {a.pid:<10d} [{cc}]{a.cpu_percent:>5.1f}%[/{cc}]  "
+                        f"{a.memory_mb:>7.0f}M  {gpu_str:>8s}  {uptime_str:>10s}"
+                    )
+            else:
+                lines.append("  无运行中的 Agent")
+
+            self.query_one("#agent-text", Label).update("\n".join(lines))
         except NoMatches:
             pass
 
