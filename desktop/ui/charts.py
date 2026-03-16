@@ -171,7 +171,16 @@ class SmoothLineChart(QWidget):
     _ANIM_FPS = 60
     _ANIM_DURATION_MS = 300  # 动画总时长（毫秒）
 
-    def __init__(self, parent: Optional[QWidget] = None) -> None:
+    def __init__(
+        self,
+        parent: Optional[QWidget] = None,
+        *,
+        title: str = "",
+        color: Optional[QColor] = None,
+        unit: str = "",
+        y_min: Optional[float] = None,
+        y_max: Optional[float] = None,
+    ) -> None:
         super().__init__(parent)
 
         # --- 数据 ---
@@ -180,13 +189,13 @@ class SmoothLineChart(QWidget):
         self._prev_data: List[float] = []     # 动画起始帧数据
 
         # --- 外观 ---
-        self._color = QColor("#30D158")  # Apple 系统绿
-        self._title = ""
-        self._unit = ""
+        self._color = color if color is not None else QColor("#30D158")
+        self._title = title
+        self._unit = unit
 
         # --- Y 轴范围 ---
-        self._fixed_min: Optional[float] = None
-        self._fixed_max: Optional[float] = None
+        self._fixed_min: Optional[float] = y_min
+        self._fixed_max: Optional[float] = y_max
 
         # --- 动画 ---
         self._anim_timer = QTimer(self)
@@ -197,7 +206,6 @@ class SmoothLineChart(QWidget):
 
         # --- 布局 ---
         self.setMinimumSize(QSize(200, 120))
-        # 背景透明，由父组件或样式决定背景
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
 
     # ----- 公开接口 -----
@@ -482,17 +490,29 @@ class MultiLineChart(QWidget):
     仅第一条曲线带渐变填充（保持视觉清晰）。
     """
 
-    def __init__(self, parent: Optional[QWidget] = None) -> None:
+    def __init__(
+        self,
+        parent: Optional[QWidget] = None,
+        *,
+        title: str = "",
+        colors: Optional[List[QColor]] = None,
+        labels: Optional[List[str]] = None,
+        unit: str = "",
+        y_min: Optional[float] = None,
+        y_max: Optional[float] = None,
+    ) -> None:
         super().__init__(parent)
 
         # 系列数据：[(data, color, label), ...]
         self._series: List[Tuple[List[float], QColor, str]] = []
-        self._title = ""
-        self._unit = ""
+        self._default_colors = colors or []
+        self._default_labels = labels or []
+        self._title = title
+        self._unit = unit
 
         # Y 轴范围
-        self._fixed_min: Optional[float] = None
-        self._fixed_max: Optional[float] = None
+        self._fixed_min: Optional[float] = y_min
+        self._fixed_max: Optional[float] = y_max
 
         self.setMinimumSize(QSize(200, 120))
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
