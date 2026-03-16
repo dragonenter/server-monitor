@@ -36,24 +36,46 @@ jobs:
         run: |
           FRAMEWORKS="dist/ServerMonitor.app/Contents/Resources/lib/python3.11/PySide6/Qt/lib"
           if [ -d "$FRAMEWORKS" ]; then
-            # 只保留 QtCore, QtGui, QtWidgets, QtDBus(QtWidgets依赖)
             for f in "$FRAMEWORKS"/Qt*.framework; do
               name=$(basename "$f" .framework)
               case "$name" in
-                QtCore|QtGui|QtWidgets|QtDBus) ;;
+                QtCore|QtGui|QtWidgets|QtDBus|QtPrintSupport) ;;
                 *) echo "Removing $name" && rm -rf "$f" ;;
               esac
             done
           fi
-          # 删除 Qt 翻译文件、多余插件
-          find dist/ServerMonitor.app -name "translations" -type d -exec rm -rf {} + 2>/dev/null || true
+          # 只删确定不需要的插件（保留 platforms、styles、imageformats）
           find dist/ServerMonitor.app -path "*/plugins/multimedia" -exec rm -rf {} + 2>/dev/null || true
           find dist/ServerMonitor.app -path "*/plugins/sqldrivers" -exec rm -rf {} + 2>/dev/null || true
           find dist/ServerMonitor.app -path "*/plugins/designer" -exec rm -rf {} + 2>/dev/null || true
           find dist/ServerMonitor.app -path "*/plugins/qmltooling" -exec rm -rf {} + 2>/dev/null || true
-          # 显示最终大小
+          find dist/ServerMonitor.app -name "translations" -type d -exec rm -rf {} + 2>/dev/null || true
           echo "App bundle size:"
           du -sh dist/ServerMonitor.app
+
+      - name: Debug app structure
+        run: |
+          echo "=== Resources dir ==="
+          ls dist/ServerMonitor.app/Contents/Resources/ | head -20
+          echo "=== Python path contents ==="
+          find dist/ServerMonitor.app/Contents/Resources -maxdepth 2 -name "desktop" -o -name "ui" | head -10
+          echo "=== Plugins ==="
+          find dist/ServerMonitor.app -path "*/plugins/*" -type d | sort -u
+          echo "=== Main script ==="
+          head -5 dist/ServerMonitor.app/Contents/Resources/__boot__.py 2>/dev/null || echo "no __boot__.py"
+
+      - name: Smoke test app launch
+        run: |
+          # 尝试启动 app 并在 3 秒后终止，检查是否崩溃
+          timeout 5 dist/ServerMonitor.app/Contents/MacOS/main 2>&1 || EXIT=$?
+          # 退出码 124=timeout（正常，说明 app 活着），其他=崩溃
+          if [ "${EXIT:-0}" = "124" ] || [ "${EXIT:-0}" = "0" ]; then
+            echo "App launched successfully"
+          else
+            echo "App failed with exit code $EXIT"
+            cat ~/Desktop/ServerMonitor_crash.log 2>/dev/null || echo "No crash log"
+            exit 1
+          fi
 
       - name: Ad-hoc code sign
         run: |
