@@ -25,7 +25,6 @@ from PySide6.QtGui import (
     QCursor,
     QFont,
     QFontDatabase,
-    QGraphicsBlurEffect,
     QIcon,
     QMouseEvent,
     QPainter,
