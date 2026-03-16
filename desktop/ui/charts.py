@@ -218,6 +218,13 @@ class SmoothLineChart(QWidget):
         if not self._anim_timer.isActive():
             self._anim_timer.start()
 
+    def add_point(self, value: float) -> None:
+        """追加一个数据点，保留最近 120 个，触发动画."""
+        self._data.append(value)
+        if len(self._data) > 120:
+            self._data = self._data[-120:]
+        self.set_data(self._data)
+
     def set_color(self, color: QColor) -> None:
         """设置曲线颜色"""
         self._color = QColor(color)
@@ -525,6 +532,27 @@ class MultiLineChart(QWidget):
         每个元素为 (data_list, color, label)。
         """
         self._series = [(list(d), QColor(c), l) for d, c, l in series]
+        self.update()
+
+    def add_points(self, values: List[float]) -> None:
+        """为每条系列追加一个数据点。values[i] 对应第 i 条线。
+
+        如果系列尚未初始化，会自动根据 _default_colors/_default_labels 创建。
+        """
+        # 自动初始化系列
+        if not self._series and values:
+            for i in range(len(values)):
+                color = self._default_colors[i] if i < len(self._default_colors) else QColor("#30D158")
+                label = self._default_labels[i] if i < len(self._default_labels) else f"Line {i}"
+                self._series.append(([], color, label))
+
+        for i, val in enumerate(values):
+            if i < len(self._series):
+                data, color, label = self._series[i]
+                data.append(val)
+                if len(data) > 120:
+                    del data[:len(data) - 120]
+                self._series[i] = (data, color, label)
         self.update()
 
     def set_title(self, title: str) -> None:

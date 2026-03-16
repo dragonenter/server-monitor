@@ -521,6 +521,64 @@ class SystemCollector:
     # History accessors
     # ------------------------------------------------------------------
 
+    def collect(self) -> dict:
+        """一次性采集所有指标，返回 _refresh() 期望的 dict 格式."""
+        cpu = self.collect_cpu()
+        mem = self.collect_memory()
+        gpus = self.collect_gpu()
+        gpu_procs = self.collect_gpu_processes()
+        disks = self.collect_disk()
+        net = self.collect_network()
+        procs = self.collect_processes()
+
+        gpu0 = gpus[0] if gpus else None
+
+        # 磁盘取根分区或第一个
+        disk_pct = 0.0
+        for d in disks:
+            if d.mountpoint == "/":
+                disk_pct = d.percent
+                break
+        if disk_pct == 0.0 and disks:
+            disk_pct = disks[0].percent
+
+        return {
+            "cpu_percent": cpu.percent_total,
+            "memory_percent": mem.percent,
+            "gpu_util": gpu0.utilization if gpu0 else 0.0,
+            "gpu_temp": gpu0.temperature if gpu0 else 0.0,
+            "gpu_name": gpu0.name if gpu0 else "—",
+            "gpu_memory_used": int(gpu0.memory_used) if gpu0 else 0,
+            "gpu_memory_total": int(gpu0.memory_total) if gpu0 else 0,
+            "gpu_power": gpu0.power_draw if gpu0 else 0.0,
+            "disk_percent": disk_pct,
+            "net_download_speed": net.bytes_recv_per_sec,
+            "net_upload_speed": net.bytes_sent_per_sec,
+            "net_bytes_recv": net.total_recv,
+            "net_bytes_sent": net.total_sent,
+            "gpu_processes": [
+                {
+                    "pid": p.pid,
+                    "name": p.name,
+                    "gpu_memory": p.gpu_memory,
+                    "gpu_util": 0.0,
+                }
+                for p in gpu_procs
+            ],
+            "processes": [
+                {
+                    "pid": p.pid,
+                    "user": p.username,
+                    "name": p.name,
+                    "cpu_percent": p.cpu_percent,
+                    "memory_percent": p.memory_percent,
+                    "gpu_memory": p.gpu_memory or 0,
+                    "status": p.status,
+                }
+                for p in procs
+            ],
+        }
+
     def _record_gpu_util(self, index: int, value: Optional[float]) -> None:
         if value is None:
             return
