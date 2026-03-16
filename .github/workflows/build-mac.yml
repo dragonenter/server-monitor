@@ -25,6 +25,13 @@ jobs:
       - name: Build app bundle with py2app
         run: python setup_mac.py py2app
 
+      - name: Rename app bundle
+        run: |
+          APP_PATH=$(ls -d dist/*.app | head -1)
+          if [ "$APP_PATH" != "dist/ServerMonitor.app" ]; then
+            mv "$APP_PATH" dist/ServerMonitor.app
+          fi
+
       - name: Create DMG
         run: |
           hdiutil create \
