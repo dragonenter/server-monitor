@@ -22,19 +22,19 @@ jobs:
       - name: Install dependencies
         run: pip install PySide6 psutil py2app
 
+      - name: Install desktop package into site-packages
+        run: |
+          # 核心修复：把 desktop 包安装到 site-packages，让 py2app 能正确追踪
+          SITE=$(python3 -c "import site; print(site.getsitepackages()[0])")
+          echo "Installing desktop to: $SITE/desktop"
+          cp -r desktop "$SITE/desktop"
+          # 验证
+          python3 -c "from desktop.ui.main_window import MonitorMainWindow; print('Import OK')"
+          python3 -c "from desktop.ui.charts import SmoothLineChart; print('Charts OK')"
+          python3 -c "from desktop.collectors.system import SystemCollector; print('Collector OK')"
+
       - name: Build app bundle with py2app
         run: python setup_mac.py py2app
-
-      - name: Inject desktop package into bundle
-        run: |
-          APP_DIR=$(ls -d dist/*.app | head -1)
-          RESOURCES="$APP_DIR/Contents/Resources"
-          echo "Copying desktop package into bundle..."
-          cp -r desktop "$RESOURCES/desktop"
-          # 清理 .pyc 缓存
-          find "$RESOURCES/desktop" -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
-          echo "Verifying..."
-          find "$RESOURCES/desktop" -name "*.py" | sort
 
       - name: Rename app bundle
         run: |
@@ -55,7 +55,6 @@ jobs:
               esac
             done
           fi
-          # 只删确定不需要的插件（保留 platforms、styles、imageformats）
           find dist/ServerMonitor.app -path "*/plugins/multimedia" -exec rm -rf {} + 2>/dev/null || true
           find dist/ServerMonitor.app -path "*/plugins/sqldrivers" -exec rm -rf {} + 2>/dev/null || true
           find dist/ServerMonitor.app -path "*/plugins/designer" -exec rm -rf {} + 2>/dev/null || true
@@ -64,48 +63,25 @@ jobs:
           echo "App bundle size:"
           du -sh dist/ServerMonitor.app
 
-      - name: Debug app structure
+      - name: Verify bundle contents
         run: |
-          echo "=== Resources dir ==="
-          ls dist/ServerMonitor.app/Contents/Resources/ | head -20
-          echo "=== Python path contents ==="
-          find dist/ServerMonitor.app/Contents/Resources -maxdepth 2 -name "desktop" -o -name "ui" | head -10
-          echo "=== Plugins ==="
-          find dist/ServerMonitor.app -path "*/plugins/*" -type d | sort -u
-          echo "=== Main script ==="
-          head -5 dist/ServerMonitor.app/Contents/Resources/__boot__.py 2>/dev/null || echo "no __boot__.py"
-
-      - name: Verify desktop package bundled
-        run: |
-          echo "=== Checking desktop package ==="
-          find dist/ServerMonitor.app/Contents/Resources -name "main_window*" -o -name "charts*" -o -name "system*" | head -20
-          # 验证关键模块存在
-          FOUND=$(find dist/ServerMonitor.app/Contents/Resources -name "main_window*" | head -1)
+          echo "=== desktop package in bundle ==="
+          find dist/ServerMonitor.app/Contents/Resources -path "*/desktop/ui/*" -name "*.py" | sort
+          FOUND=$(find dist/ServerMonitor.app/Contents/Resources -name "main_window.py" | head -1)
           if [ -z "$FOUND" ]; then
-            echo "ERROR: desktop package not bundled!"
-            echo "=== Full Resources listing ==="
-            find dist/ServerMonitor.app/Contents/Resources -name "*.py" -o -name "*.pyc" | head -50
+            echo "ERROR: desktop modules missing from bundle!"
+            find dist/ServerMonitor.app/Contents/Resources -name "*.py" | head -30
             exit 1
           fi
-          echo "Desktop package found: $FOUND"
-
-      - name: Smoke test (import check)
-        run: |
-          RESOURCES="dist/ServerMonitor.app/Contents/Resources"
-          PYTHONPATH="${RESOURCES}:${RESOURCES}/lib/python3.11" python3 -c "import desktop.ui.charts; import desktop.collectors.system; print('All imports OK')" || {
-            echo "Import test failed"; cat ~/Desktop/ServerMonitor_crash.log 2>/dev/null || true; exit 1
-          }
+          echo "OK: $FOUND"
 
       - name: Ad-hoc code sign
         run: |
-          # 移除 quarantine 属性 + ad-hoc 签名，防止 "已损坏" 提示
           xattr -cr dist/ServerMonitor.app
           codesign --force --deep --sign - dist/ServerMonitor.app
-          echo "Code sign done"
 
       - name: Create DMG
         run: |
-          # 先创建临时 DMG 再转换，避免 "Resource busy" 问题
           hdiutil create -volname "Server Monitor" \
             -srcfolder dist/ServerMonitor.app \
             -ov -format UDRW \
@@ -113,6 +89,8 @@ jobs:
           sleep 2
           hdiutil convert /tmp/ServerMonitor_rw.dmg \
             -format UDZO -o ServerMonitor.dmg
+          echo "DMG size:"
+          ls -lh ServerMonitor.dmg
 
       - name: Upload DMG as artifact
         uses: actions/upload-artifact@v4

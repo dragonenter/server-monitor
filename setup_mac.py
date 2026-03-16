@@ -1,24 +1,19 @@
 """
 py2app setup script for Server Monitor macOS app.
 Usage: python setup_mac.py py2app
+
+前置条件：desktop 包必须已安装到 site-packages 中。
 """
 
 import os
-from setuptools import setup, find_packages
+from setuptools import setup
 
 APP = ["desktop/main.py"]
 APP_NAME = "ServerMonitor"
-DATA_FILES = []
 
 _icon = "desktop/assets/icon.icns"
 
-# 只保留实际用到的 PySide6 模块
-PYSIDE6_KEEP = [
-    "PySide6.QtCore",
-    "PySide6.QtGui",
-    "PySide6.QtWidgets",
-]
-
+# 不需要的 PySide6 子模块
 PYSIDE6_EXCLUDE = [
     "PySide6.Qt3DAnimation", "PySide6.Qt3DCore", "PySide6.Qt3DExtras",
     "PySide6.Qt3DInput", "PySide6.Qt3DLogic", "PySide6.Qt3DRender",
@@ -29,7 +24,7 @@ PYSIDE6_EXCLUDE = [
     "PySide6.QtNetwork", "PySide6.QtNetworkAuth", "PySide6.QtNfc",
     "PySide6.QtOpenGL", "PySide6.QtOpenGLWidgets",
     "PySide6.QtPdf", "PySide6.QtPdfWidgets", "PySide6.QtPositioning",
-    "PySide6.QtPrintSupport", "PySide6.QtQml", "PySide6.QtQuick",
+    "PySide6.QtQml", "PySide6.QtQuick",
     "PySide6.QtQuick3D", "PySide6.QtQuickControls2", "PySide6.QtQuickWidgets",
     "PySide6.QtRemoteObjects", "PySide6.QtScxml", "PySide6.QtSensors",
     "PySide6.QtSerialBus", "PySide6.QtSerialPort", "PySide6.QtSpatialAudio",
@@ -43,16 +38,17 @@ PYSIDE6_EXCLUDE = [
 OPTIONS = {
     "argv_emulation": False,
     **({"iconfile": _icon} if os.path.exists(_icon) else {}),
-    "includes": PYSIDE6_KEEP + [
+    # desktop 包已在 site-packages 中，py2app 可以自动追踪
+    "packages": [
         "desktop", "desktop.ui", "desktop.collectors",
-        "desktop.ui.charts", "desktop.ui.main_window",
-        "desktop.collectors.system",
+        "psutil",
     ],
-    "packages": ["psutil", "PySide6.QtCore", "PySide6.QtGui", "PySide6.QtWidgets"],
+    "includes": [
+        "PySide6.QtCore", "PySide6.QtGui", "PySide6.QtWidgets",
+    ],
     "excludes": [
         "tkinter", "matplotlib", "numpy", "scipy", "pandas", "PIL",
-        "test", "unittest", "email", "xmlrpc", "pydoc", "doctest",
-        "distutils",
+        "test", "unittest", "doctest",
     ] + PYSIDE6_EXCLUDE,
     "plist": {
         "CFBundleName": "Server Monitor",
@@ -68,9 +64,7 @@ OPTIONS = {
 setup(
     name=APP_NAME,
     app=APP,
-    data_files=DATA_FILES,
-    # 关键：告诉 setuptools 发现本地 desktop 包
-    packages=find_packages(include=["desktop", "desktop.*"]),
+    data_files=[],
     options={"py2app": OPTIONS},
     setup_requires=["py2app"],
 )
