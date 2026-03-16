@@ -4,8 +4,7 @@ Usage: python setup_mac.py py2app
 """
 
 import os
-
-from setuptools import setup
+from setuptools import setup, find_packages
 
 APP = ["desktop/main.py"]
 APP_NAME = "ServerMonitor"
@@ -13,7 +12,7 @@ DATA_FILES = []
 
 _icon = "desktop/assets/icon.icns"
 
-# 只保留实际用到的 PySide6 模块，排除其余所有（节省 ~200MB）
+# 只保留实际用到的 PySide6 模块
 PYSIDE6_KEEP = [
     "PySide6.QtCore",
     "PySide6.QtGui",
@@ -21,82 +20,39 @@ PYSIDE6_KEEP = [
 ]
 
 PYSIDE6_EXCLUDE = [
-    "PySide6.Qt3DAnimation",
-    "PySide6.Qt3DCore",
-    "PySide6.Qt3DExtras",
-    "PySide6.Qt3DInput",
-    "PySide6.Qt3DLogic",
-    "PySide6.Qt3DRender",
-    "PySide6.QtBluetooth",
-    "PySide6.QtCharts",
-    "PySide6.QtConcurrent",
-    "PySide6.QtDataVisualization",
-    "PySide6.QtDBus",
-    "PySide6.QtDesigner",
-    "PySide6.QtHelp",
-    "PySide6.QtHttpServer",
-    "PySide6.QtLocation",
-    "PySide6.QtMultimedia",
-    "PySide6.QtMultimediaWidgets",
-    "PySide6.QtNetwork",
-    "PySide6.QtNetworkAuth",
-    "PySide6.QtNfc",
-    "PySide6.QtOpenGL",
-    "PySide6.QtOpenGLWidgets",
-    "PySide6.QtPdf",
-    "PySide6.QtPdfWidgets",
-    "PySide6.QtPositioning",
-    "PySide6.QtPrintSupport",
-    "PySide6.QtQml",
-    "PySide6.QtQuick",
-    "PySide6.QtQuick3D",
-    "PySide6.QtQuickControls2",
-    "PySide6.QtQuickWidgets",
-    "PySide6.QtRemoteObjects",
-    "PySide6.QtScxml",
-    "PySide6.QtSensors",
-    "PySide6.QtSerialBus",
-    "PySide6.QtSerialPort",
-    "PySide6.QtSpatialAudio",
-    "PySide6.QtSql",
-    "PySide6.QtStateMachine",
-    "PySide6.QtSvg",
-    "PySide6.QtSvgWidgets",
-    "PySide6.QtTest",
-    "PySide6.QtTextToSpeech",
-    "PySide6.QtUiTools",
-    "PySide6.QtWebChannel",
-    "PySide6.QtWebEngine",
-    "PySide6.QtWebEngineCore",
-    "PySide6.QtWebEngineQuick",
-    "PySide6.QtWebEngineWidgets",
-    "PySide6.QtWebSockets",
-    "PySide6.QtXml",
+    "PySide6.Qt3DAnimation", "PySide6.Qt3DCore", "PySide6.Qt3DExtras",
+    "PySide6.Qt3DInput", "PySide6.Qt3DLogic", "PySide6.Qt3DRender",
+    "PySide6.QtBluetooth", "PySide6.QtCharts", "PySide6.QtConcurrent",
+    "PySide6.QtDataVisualization", "PySide6.QtDBus", "PySide6.QtDesigner",
+    "PySide6.QtHelp", "PySide6.QtHttpServer", "PySide6.QtLocation",
+    "PySide6.QtMultimedia", "PySide6.QtMultimediaWidgets",
+    "PySide6.QtNetwork", "PySide6.QtNetworkAuth", "PySide6.QtNfc",
+    "PySide6.QtOpenGL", "PySide6.QtOpenGLWidgets",
+    "PySide6.QtPdf", "PySide6.QtPdfWidgets", "PySide6.QtPositioning",
+    "PySide6.QtPrintSupport", "PySide6.QtQml", "PySide6.QtQuick",
+    "PySide6.QtQuick3D", "PySide6.QtQuickControls2", "PySide6.QtQuickWidgets",
+    "PySide6.QtRemoteObjects", "PySide6.QtScxml", "PySide6.QtSensors",
+    "PySide6.QtSerialBus", "PySide6.QtSerialPort", "PySide6.QtSpatialAudio",
+    "PySide6.QtSql", "PySide6.QtStateMachine", "PySide6.QtSvg",
+    "PySide6.QtSvgWidgets", "PySide6.QtTest", "PySide6.QtTextToSpeech",
+    "PySide6.QtUiTools", "PySide6.QtWebChannel", "PySide6.QtWebEngine",
+    "PySide6.QtWebEngineCore", "PySide6.QtWebEngineQuick",
+    "PySide6.QtWebEngineWidgets", "PySide6.QtWebSockets", "PySide6.QtXml",
 ]
 
 OPTIONS = {
     "argv_emulation": False,
     **({"iconfile": _icon} if os.path.exists(_icon) else {}),
-    "includes": PYSIDE6_KEEP,
-    "packages": ["psutil", "desktop", "desktop.ui", "desktop.collectors"],
+    "includes": PYSIDE6_KEEP + [
+        "desktop", "desktop.ui", "desktop.collectors",
+        "desktop.ui.charts", "desktop.ui.main_window",
+        "desktop.collectors.system",
+    ],
+    "packages": ["psutil", "PySide6.QtCore", "PySide6.QtGui", "PySide6.QtWidgets"],
     "excludes": [
-        "tkinter",
-        "matplotlib",
-        "numpy",
-        "scipy",
-        "pandas",
-        "PIL",
-        "test",
-        "unittest",
-        "email",
-        "html",
-        "http",
-        "xmlrpc",
-        "pydoc",
-        "doctest",
+        "tkinter", "matplotlib", "numpy", "scipy", "pandas", "PIL",
+        "test", "unittest", "email", "xmlrpc", "pydoc", "doctest",
         "distutils",
-        "setuptools",
-        "pkg_resources",
     ] + PYSIDE6_EXCLUDE,
     "plist": {
         "CFBundleName": "Server Monitor",
@@ -113,6 +69,8 @@ setup(
     name=APP_NAME,
     app=APP,
     data_files=DATA_FILES,
+    # 关键：告诉 setuptools 发现本地 desktop 包
+    packages=find_packages(include=["desktop", "desktop.*"]),
     options={"py2app": OPTIONS},
     setup_requires=["py2app"],
 )

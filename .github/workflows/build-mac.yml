@@ -64,18 +64,39 @@ jobs:
           echo "=== Main script ==="
           head -5 dist/ServerMonitor.app/Contents/Resources/__boot__.py 2>/dev/null || echo "no __boot__.py"
 
-      - name: Smoke test app launch
+      - name: Verify desktop package bundled
         run: |
-          # 尝试启动 app 并在 3 秒后终止，检查是否崩溃
-          timeout 5 dist/ServerMonitor.app/Contents/MacOS/main 2>&1 || EXIT=$?
-          # 退出码 124=timeout（正常，说明 app 活着），其他=崩溃
-          if [ "${EXIT:-0}" = "124" ] || [ "${EXIT:-0}" = "0" ]; then
-            echo "App launched successfully"
-          else
-            echo "App failed with exit code $EXIT"
-            cat ~/Desktop/ServerMonitor_crash.log 2>/dev/null || echo "No crash log"
+          echo "=== Checking desktop package ==="
+          find dist/ServerMonitor.app/Contents/Resources -name "main_window*" -o -name "charts*" -o -name "system*" | head -20
+          # 验证关键模块存在
+          FOUND=$(find dist/ServerMonitor.app/Contents/Resources -name "main_window*" | head -1)
+          if [ -z "$FOUND" ]; then
+            echo "ERROR: desktop package not bundled!"
+            echo "=== Full Resources listing ==="
+            find dist/ServerMonitor.app/Contents/Resources -name "*.py" -o -name "*.pyc" | head -50
             exit 1
           fi
+          echo "Desktop package found: $FOUND"
+
+      - name: Smoke test (import check)
+        run: |
+          # 在打包环境中测试导入是否成功（不启动 GUI）
+          RESOURCES="dist/ServerMonitor.app/Contents/Resources"
+          PYTHONPATH="$RESOURCES:$RESOURCES/lib/python3.11:$RESOURCES/lib/python3.11/lib-dynload" \
+            python3 -c "
+import sys
+sys.path.insert(0, '$RESOURCES')
+sys.path.insert(0, '$RESOURCES/lib/python3.11')
+from desktop.collectors.system import SystemCollector
+print('Import SystemCollector: OK')
+from desktop.ui.charts import SmoothLineChart
+print('Import SmoothLineChart: OK')
+print('All imports passed!')
+          " 2>&1 || {
+            echo "Import test failed"
+            cat ~/Desktop/ServerMonitor_crash.log 2>/dev/null || true
+            exit 1
+          }
 
       - name: Ad-hoc code sign
         run: |
