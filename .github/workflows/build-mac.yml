@@ -82,11 +82,13 @@ jobs:
 
       - name: Create DMG
         run: |
+          sleep 5
+          # 使用 -nospotlight -noanyowners 避免 resource busy
           hdiutil create -volname "Server Monitor" \
             -srcfolder dist/ServerMonitor.app \
-            -ov -format UDRW \
+            -ov -format UDRW -nospotlight \
             /tmp/ServerMonitor_rw.dmg
-          sleep 2
+          sleep 3
           hdiutil convert /tmp/ServerMonitor_rw.dmg \
             -format UDZO -o ServerMonitor.dmg
           echo "DMG size:"
