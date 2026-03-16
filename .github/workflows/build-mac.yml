@@ -34,12 +34,14 @@ jobs:
 
       - name: Create DMG
         run: |
-          hdiutil create \
-            -volname "Server Monitor" \
+          # 先创建临时 DMG 再转换，避免 "Resource busy" 问题
+          hdiutil create -volname "Server Monitor" \
             -srcfolder dist/ServerMonitor.app \
-            -ov \
-            -format UDZO \
-            ServerMonitor.dmg
+            -ov -format UDRW \
+            /tmp/ServerMonitor_rw.dmg
+          sleep 2
+          hdiutil convert /tmp/ServerMonitor_rw.dmg \
+            -format UDZO -o ServerMonitor.dmg
 
       - name: Upload DMG as artifact
         uses: actions/upload-artifact@v4
