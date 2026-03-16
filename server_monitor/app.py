@@ -152,7 +152,7 @@ DataTable {
     height: 1fr;
 }
 
-#gpu-detail-scroll, #net-detail-scroll {
+#agent-detail-scroll, #gpu-detail-scroll, #net-detail-scroll {
     padding: 1 2;
 }
 
@@ -177,9 +177,10 @@ class ServerMonitorApp(App):
         Binding("q", "quit", "退出", show=True),
         Binding("t", "toggle_theme", "主题", show=True),
         Binding("1", "tab_overview", "总览", show=True),
-        Binding("2", "tab_gpu", "显卡", show=True),
-        Binding("3", "tab_process", "进程", show=True),
-        Binding("4", "tab_network", "网络", show=True),
+        Binding("2", "tab_agent", "Agent", show=True),
+        Binding("3", "tab_gpu", "显卡", show=True),
+        Binding("4", "tab_process", "进程", show=True),
+        Binding("5", "tab_network", "网络", show=True),
         Binding("s", "cycle_sort", "排序", show=True),
         Binding("k", "kill_process", "终止", show=True),
         Binding("r", "refresh_now", "刷新", show=True),
@@ -245,6 +246,11 @@ class ServerMonitorApp(App):
                         yield Label("", id="net-text", classes="metric-text")
                         yield SmoothChart(id="net-chart", classes="chart-box")
 
+            # ---- Agent 详情 ----
+            with TabPane("Agent", id="agent-tab"):
+                with VerticalScroll(id="agent-detail-scroll"):
+                    yield Label("", id="agent-detail-text")
+
             # ---- 显卡详情 ----
             with TabPane("显卡详情", id="gpu-tab"):
                 with VerticalScroll(id="gpu-detail-scroll"):
@@ -296,6 +302,7 @@ class ServerMonitorApp(App):
             capacity = self.collector.calculate_capacity()
 
             self._update_agents(agents, capacity)
+            self._update_agent_detail(agents, capacity)
             self._update_cpu(cpu)
             self._update_memory(mem)
             self._update_gpu_overview(gpus, gpu_procs)
@@ -374,6 +381,64 @@ class ServerMonitorApp(App):
                 lines.append("  无运行中的 Agent")
 
             self.query_one("#agent-text", Label).update("\n".join(lines))
+        except NoMatches:
+            pass
+
+    def _update_agent_detail(self, agents, capacity) -> None:
+        try:
+            _p = self._pad_display
+            lines = []
+
+            # Header summary
+            count = len(agents)
+            parallel = capacity.get("recommended_parallel", 0)
+            lines.append(f"  [bold]AI Agent 运行状态[/bold]")
+            lines.append(f"  运行中: [#0A84FF]{count}[/#0A84FF] 个  ·  可并行: [#30D158]+{parallel}[/#30D158]")
+            lines.append(f"  GPU空闲: {capacity.get('gpu_free_mb', 0):.0f}MB  ·  "
+                         f"内存空闲: {capacity.get('ram_free_mb', 0):.0f}MB  ·  "
+                         f"CPU空闲: {capacity.get('cpu_free_cores', 0):.1f} 核")
+            lines.append("")
+
+            if not agents:
+                lines.append("  [dim]当前无运行中的 AI Agent[/dim]")
+
+            for a in agents:
+                # Format uptime
+                h, rem = divmod(int(a.uptime_seconds), 3600)
+                m, s = divmod(rem, 60)
+                uptime_str = f"{h}h{m:02d}m{s:02d}s" if h > 0 else f"{m}m{s:02d}s"
+
+                # Agent type color
+                type_color = {"推理服务": "#FF9F0A", "CLI工具": "#0A84FF", "SDK应用": "#30D158", "框架": "#BF5AF2"}.get(a.agent_type, "#8E8E93")
+
+                # Memory trend indicator
+                if a.mem_trend_mb_per_min > 1:
+                    trend = f"[#FF453A]↑ {a.mem_trend_mb_per_min:.1f}MB/min[/#FF453A]"
+                elif a.mem_trend_mb_per_min < -1:
+                    trend = f"[#30D158]↓ {abs(a.mem_trend_mb_per_min):.1f}MB/min[/#30D158]"
+                else:
+                    trend = "[dim]稳定[/dim]"
+
+                gpu_str = f"{a.gpu_memory_mb:.0f}MB" if a.gpu_memory_mb > 0 else "—"
+                model_str = a.model_name if a.model_name else "—"
+                ports_str = ", ".join(str(p) for p in a.listen_ports[:5]) if a.listen_ports else "—"
+
+                lines.append(f"  ──────────────────────────────────────────────────")
+                lines.append(f"  [bold]{a.name}[/bold]  [{type_color}]{a.agent_type}[/{type_color}]  ·  PID {a.pid}  ·  运行 {uptime_str}")
+                if a.model_name:
+                    lines.append(f"  模型: [bold]{model_str}[/bold]")
+                lines.append(f"  命令: [dim]{a.cmdline[:80]}{'...' if len(a.cmdline) > 80 else ''}[/dim]")
+                lines.append("")
+                lines.append(f"    CPU   {a.cpu_percent:>6.1f}%   (含子进程: {a.total_cpu_percent:.1f}%)")
+                lines.append(f"    内存  {a.memory_mb:>6.0f}MB  (含子进程: {a.total_memory_mb:.0f}MB)  趋势: {trend}")
+                lines.append(f"    GPU   {gpu_str:>6s}")
+                lines.append(f"    线程  {a.thread_count:>6d}     子进程: {a.children_count}")
+                if a.io_read_mb > 0 or a.io_write_mb > 0:
+                    lines.append(f"    IO    读 {a.io_read_mb:.1f}MB  写 {a.io_write_mb:.1f}MB")
+                lines.append(f"    网络  {a.connections_count} 个连接  ·  监听端口: {ports_str}")
+                lines.append("")
+
+            self.query_one("#agent-detail-text", Label).update("\n".join(lines))
         except NoMatches:
             pass
 
@@ -754,6 +819,12 @@ class ServerMonitorApp(App):
         except NoMatches:
             pass
 
+    def action_tab_agent(self) -> None:
+        try:
+            self.query_one("#tabs", TabbedContent).active = "agent-tab"
+        except NoMatches:
+            pass
+
     def action_tab_gpu(self) -> None:
         try:
             self.query_one("#tabs", TabbedContent).active = "gpu-tab"
@@ -804,7 +875,7 @@ class ServerMonitorApp(App):
     def action_show_help(self) -> None:
         self.notify(
             "[bold]快捷键[/bold]\n\n"
-            "  [bold]1 2 3 4[/bold]  切换标签页（总览 / 显卡 / 进程 / 网络）\n"
+            "  [bold]1 2 3 4 5[/bold]  切换标签页（总览 / Agent / 显卡 / 进程 / 网络）\n"
             "  [bold]t[/bold]        切换主题配色\n"
             "  [bold]s[/bold]        切换进程排序（CPU / 内存 / 显存 / 名称）\n"
             "  [bold]k[/bold]        终止选中进程\n"
