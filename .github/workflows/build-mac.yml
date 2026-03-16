@@ -55,6 +55,13 @@ jobs:
           echo "App bundle size:"
           du -sh dist/ServerMonitor.app
 
+      - name: Ad-hoc code sign
+        run: |
+          # 移除 quarantine 属性 + ad-hoc 签名，防止 "已损坏" 提示
+          xattr -cr dist/ServerMonitor.app
+          codesign --force --deep --sign - dist/ServerMonitor.app
+          echo "Code sign done"
+
       - name: Create DMG
         run: |
           # 先创建临时 DMG 再转换，避免 "Resource busy" 问题
