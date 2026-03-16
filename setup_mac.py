@@ -78,7 +78,7 @@ OPTIONS = {
     "argv_emulation": False,
     **({"iconfile": _icon} if os.path.exists(_icon) else {}),
     "includes": PYSIDE6_KEEP,
-    "packages": ["psutil"],
+    "packages": ["psutil", "desktop", "desktop.ui", "desktop.collectors"],
     "excludes": [
         "tkinter",
         "matplotlib",
