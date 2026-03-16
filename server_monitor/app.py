@@ -325,6 +325,17 @@ class ServerMonitorApp(App):
     # AI Agent
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _pad_display(text: str, width: int, align: str = "left") -> str:
+        """按显示宽度对齐（中文字符占 2 宽度）."""
+        display_w = 0
+        for ch in text:
+            display_w += 2 if ord(ch) > 0x7F else 1
+        pad = max(0, width - display_w)
+        if align == "right":
+            return " " * pad + text
+        return text + " " * pad
+
     def _update_agents(self, agents, capacity) -> None:
         try:
             count = len(agents)
@@ -338,13 +349,14 @@ class ServerMonitorApp(App):
                 f"空闲显存: {gpu_free:.0f}MB  ·  空闲内存: {ram_free:.0f}MB"
             ]
 
+            _p = self._pad_display
             if agents:
                 lines.append("")
                 lines.append(
-                    f"  {'名称':<18s} {'PID':<10s} {'CPU%':>6s}  "
-                    f"{'内存':>8s}  {'GPU显存':>8s}  {'运行时长':>10s}"
+                    f"  {_p('名称', 20)} {_p('PID', 10)} {_p('CPU%', 7)} "
+                    f"{_p('内存', 9)} {_p('GPU显存', 10)} {_p('运行时长', 10)}"
                 )
-                lines.append(f"  {'─'*18} {'─'*10} {'─'*6}  {'─'*8}  {'─'*8}  {'─'*10}")
+                lines.append(f"  {'─'*20} {'─'*10} {'─'*7} {'─'*9} {'─'*10} {'─'*10}")
                 for a in agents[:10]:
                     h, rem = divmod(int(a.uptime_seconds), 3600)
                     m, s = divmod(rem, 60)
@@ -352,8 +364,11 @@ class ServerMonitorApp(App):
                     gpu_str = f"{a.gpu_memory_mb:.0f}MB" if a.gpu_memory_mb > 0 else "—"
                     cc = pct_color(a.cpu_percent)
                     lines.append(
-                        f"  {a.name:<18s} {a.pid:<10d} [{cc}]{a.cpu_percent:>5.1f}%[/{cc}]  "
-                        f"{a.memory_mb:>7.0f}M  {gpu_str:>8s}  {uptime_str:>10s}"
+                        f"  {_p(a.name, 20)} {_p(str(a.pid), 10)} "
+                        f"[{cc}]{_p(f'{a.cpu_percent:.1f}%', 7, 'right')}[/{cc}] "
+                        f"{_p(f'{a.memory_mb:.0f}M', 9, 'right')} "
+                        f"{_p(gpu_str, 10, 'right')} "
+                        f"{_p(uptime_str, 10, 'right')}"
                     )
             else:
                 lines.append("  无运行中的 Agent")
