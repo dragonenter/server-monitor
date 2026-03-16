@@ -114,6 +114,22 @@ class ProcessInfo:
     gpu_memory_mb: Optional[float] = None
 
 
+@dataclass
+class AgentInfo:
+    """A detected AI agent process."""
+
+    pid: int
+    name: str            # Agent display name (e.g. "Claude Code", "LangChain Agent")
+    process_name: str    # Actual process name
+    cmdline: str         # Full command line (truncated to 200 chars)
+    cpu_percent: float
+    memory_mb: float     # RSS memory in MB
+    gpu_memory_mb: float # GPU memory in MB (0 if not using GPU)
+    gpu_index: int       # Which GPU (-1 if none)
+    uptime_seconds: float # How long running
+    status: str          # running/sleeping etc
+
+
 # ---------------------------------------------------------------------------
 # History helper
 # ---------------------------------------------------------------------------
@@ -525,6 +541,182 @@ class SystemCollector:
         return procs[:limit]
 
     # ------------------------------------------------------------------
+    # AI Agent detection
+    # ------------------------------------------------------------------
+
+    # Pattern → friendly display name mapping for agent detection.
+    _AGENT_PATTERNS: list[tuple[re.Pattern, str]] = [
+        (re.compile(r"claude", re.IGNORECASE), "Claude Code"),
+        (re.compile(r"anthropic", re.IGNORECASE), "Anthropic Agent"),
+        (re.compile(r"langgraph", re.IGNORECASE), "LangGraph Agent"),
+        (re.compile(r"langchain", re.IGNORECASE), "LangChain Agent"),
+        (re.compile(r"autogen", re.IGNORECASE), "AutoGen Agent"),
+        (re.compile(r"crewai", re.IGNORECASE), "CrewAI Agent"),
+        (re.compile(r"crew", re.IGNORECASE), "Crew Agent"),
+        (re.compile(r"openai", re.IGNORECASE), "OpenAI Agent"),
+        (re.compile(r"llamaindex", re.IGNORECASE), "LlamaIndex Agent"),
+        (re.compile(r"dspy", re.IGNORECASE), "DSPy Agent"),
+        (re.compile(r"metagpt", re.IGNORECASE), "MetaGPT Agent"),
+        (re.compile(r"chatglm", re.IGNORECASE), "ChatGLM"),
+        (re.compile(r"vllm", re.IGNORECASE), "vLLM Server"),
+        (re.compile(r"text-generation", re.IGNORECASE), "Text Generation Server"),
+        (re.compile(r"ollama", re.IGNORECASE), "Ollama"),
+        (re.compile(r"lmstudio", re.IGNORECASE), "LM Studio"),
+        (re.compile(r"transformers.*(pipeline|generate)", re.IGNORECASE), "Transformers Pipeline"),
+    ]
+    # Catch-all: any python process with "agent" in the cmdline.
+    _AGENT_PYTHON_PATTERN = re.compile(r"agent", re.IGNORECASE)
+
+    def collect_agents(self) -> list[AgentInfo]:
+        """Scan running processes and return detected AI agent processes."""
+        now = time.time()
+
+        # Build pid → (gpu_memory_mb, gpu_index) from GPU process list.
+        gpu_info_by_pid: dict[int, tuple[float, int]] = {}
+        try:
+            for gp in self.collect_gpu_processes():
+                mem = gp.gpu_memory_used_mb or 0.0
+                existing = gpu_info_by_pid.get(gp.pid)
+                if existing is None or mem > existing[0]:
+                    gpu_info_by_pid[gp.pid] = (mem, gp.gpu_index)
+        except Exception:
+            pass
+
+        agents: list[AgentInfo] = []
+
+        for proc in psutil.process_iter(
+            ["pid", "name", "cpu_percent", "memory_info", "status", "create_time"]
+        ):
+            try:
+                pinfo = proc.info
+                pid = pinfo["pid"]
+                proc_name = pinfo["name"] or ""
+
+                try:
+                    cmdline_parts = proc.cmdline()
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    continue
+
+                if not cmdline_parts:
+                    continue
+
+                cmdline = " ".join(cmdline_parts)
+                cmdline_truncated = cmdline[:200]
+
+                # Try to match against known patterns.
+                matched_name: Optional[str] = None
+                for pattern, display_name in self._AGENT_PATTERNS:
+                    if pattern.search(cmdline):
+                        matched_name = display_name
+                        break
+
+                # Catch-all: python process with "agent" in cmdline.
+                if matched_name is None:
+                    is_python = any(
+                        p in proc_name.lower() for p in ("python", "python3")
+                    ) or cmdline_parts[0].lower().endswith(("python", "python3"))
+                    if is_python and self._AGENT_PYTHON_PATTERN.search(cmdline):
+                        matched_name = "Python Agent"
+
+                if matched_name is None:
+                    continue
+
+                mem_info = pinfo.get("memory_info")
+                memory_mb = (mem_info.rss / (1024 * 1024)) if mem_info else 0.0
+
+                cpu_pct = pinfo.get("cpu_percent") or 0.0
+
+                status = pinfo.get("status") or "unknown"
+
+                create_time = pinfo.get("create_time")
+                uptime = (now - create_time) if create_time else 0.0
+
+                gpu_mem, gpu_idx = gpu_info_by_pid.get(pid, (0.0, -1))
+
+                agents.append(AgentInfo(
+                    pid=pid,
+                    name=matched_name,
+                    process_name=proc_name,
+                    cmdline=cmdline_truncated,
+                    cpu_percent=cpu_pct,
+                    memory_mb=round(memory_mb, 2),
+                    gpu_memory_mb=round(gpu_mem, 2),
+                    gpu_index=gpu_idx,
+                    uptime_seconds=round(uptime, 1),
+                    status=status,
+                ))
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+            except Exception:
+                continue
+
+        # Sort by GPU memory desc, then CPU desc.
+        agents.sort(key=lambda a: (-a.gpu_memory_mb, -a.cpu_percent))
+        return agents
+
+    def calculate_capacity(self) -> dict:
+        """Estimate how many more AI agents the system can support."""
+        GPU_PER_AGENT_MB = 4096.0
+        RAM_PER_AGENT_MB = 2048.0
+        CPU_CORES_PER_AGENT = 2.0
+
+        # GPU free memory.
+        gpu_free_mb = 0.0
+        try:
+            gpus = self.collect_gpu()
+            for g in gpus:
+                total = g.memory_total_mb or 0.0
+                used = g.memory_used_mb or 0.0
+                gpu_free_mb += max(total - used, 0.0)
+        except Exception:
+            pass
+
+        # RAM free.
+        ram_free_mb = 0.0
+        try:
+            vm = psutil.virtual_memory()
+            ram_free_mb = vm.available / (1024 * 1024)
+        except Exception:
+            pass
+
+        # CPU free cores.
+        cpu_free_cores = 0.0
+        try:
+            logical = psutil.cpu_count(logical=True) or 0
+            cpu_pct = psutil.cpu_percent(interval=0)
+            cpu_free_cores = logical * (1.0 - cpu_pct / 100.0)
+        except Exception:
+            pass
+
+        # Running agents count.
+        try:
+            running_agents = self.collect_agents()
+            running_agent_count = len(running_agents)
+        except Exception:
+            running_agent_count = 0
+
+        max_by_gpu = int(gpu_free_mb / GPU_PER_AGENT_MB) if gpu_free_mb > 0 else 0
+        max_by_ram = int(ram_free_mb / RAM_PER_AGENT_MB) if ram_free_mb > 0 else 0
+        max_by_cpu = int(cpu_free_cores / CPU_CORES_PER_AGENT) if cpu_free_cores > 0 else 0
+
+        # If no GPU is available, don't let GPU be the bottleneck.
+        if gpu_free_mb == 0.0:
+            recommended = min(max_by_ram, max_by_cpu)
+        else:
+            recommended = min(max_by_gpu, max_by_ram, max_by_cpu)
+
+        return {
+            "max_agents_by_gpu": max_by_gpu,
+            "max_agents_by_ram": max_by_ram,
+            "max_agents_by_cpu": max_by_cpu,
+            "recommended_parallel": max(recommended, 0),
+            "gpu_free_mb": round(gpu_free_mb, 2),
+            "ram_free_mb": round(ram_free_mb, 2),
+            "cpu_free_cores": round(cpu_free_cores, 2),
+            "running_agent_count": running_agent_count,
+        }
+
+    # ------------------------------------------------------------------
     # History accessors
     # ------------------------------------------------------------------
 
@@ -540,6 +732,8 @@ class SystemCollector:
         disks = self.collect_disk()
         net = self.collect_network()
         procs = self.collect_processes()
+        agents = self.collect_agents()
+        capacity = self.calculate_capacity()
 
         gpu0 = gpus[0] if gpus else None
 
@@ -594,6 +788,24 @@ class SystemCollector:
                 }
                 for p in procs
             ],
+            # AI Agents — AgentInfo
+            "agents": [
+                {
+                    "pid": a.pid,
+                    "name": a.name,
+                    "process_name": a.process_name,
+                    "cmdline": a.cmdline,
+                    "cpu_percent": a.cpu_percent,
+                    "memory_mb": a.memory_mb,
+                    "gpu_memory_mb": a.gpu_memory_mb,
+                    "gpu_index": a.gpu_index,
+                    "uptime_seconds": a.uptime_seconds,
+                    "status": a.status,
+                }
+                for a in agents
+            ],
+            # Capacity estimation
+            "capacity": capacity,
         }
 
     def _record_gpu_util(self, index: int, value: Optional[float]) -> None:

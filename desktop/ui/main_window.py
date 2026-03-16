@@ -443,8 +443,10 @@ class _StatusBar(QWidget):
         mem: float,
         gpu: float,
         temp: float,
+        agent_count: int = 0,
     ):
         parts = [
+            f"Agent: {agent_count}",
             f"CPU {cpu:.1f}%",
             f"内存 {mem:.1f}%",
             f"GPU {gpu:.1f}%",
@@ -475,7 +477,47 @@ class _OverviewPage(QWidget):
         grid.setContentsMargins(20, 20, 20, 20)
         grid.setSpacing(16)
 
-        # Row 0 — CPU + Memory (side by side)
+        # Row 0 — AI Agent (full width, prominent)
+        agent_inner = QWidget()
+        agent_inner.setStyleSheet("background: transparent; border: none;")
+        agent_lay = QVBoxLayout(agent_inner)
+        agent_lay.setContentsMargins(0, 0, 0, 0)
+        agent_lay.setSpacing(4)
+
+        self.agent_count_label = QLabel("0 个运行中")
+        self.agent_count_label.setStyleSheet(f"""
+            color: {_COLORS["accent"]};
+            font-size: 28px;
+            font-weight: 700;
+            background: transparent;
+            border: none;
+        """)
+        agent_lay.addWidget(self.agent_count_label)
+
+        self.agent_parallel_label = QLabel("可并行: +0")
+        self.agent_parallel_label.setStyleSheet(f"""
+            color: {_COLORS["text_secondary"]};
+            font-size: 13px;
+            font-weight: 500;
+            background: transparent;
+            border: none;
+        """)
+        agent_lay.addWidget(self.agent_parallel_label)
+
+        self.agent_list_label = QLabel("无运行中的 Agent")
+        self.agent_list_label.setStyleSheet(f"""
+            color: {_COLORS["text_secondary"]};
+            font-size: 11px;
+            background: transparent;
+            border: none;
+        """)
+        self.agent_list_label.setWordWrap(True)
+        agent_lay.addWidget(self.agent_list_label)
+
+        self.agent_card = create_card("AI Agent", agent_inner)
+        grid.addWidget(self.agent_card, 0, 0, 1, 2)
+
+        # Row 1 — CPU + Memory (side by side)
         self.cpu_chart = SmoothLineChart(
             title="处理器",
             color=QColor(_COLORS["accent"]),
@@ -483,7 +525,7 @@ class _OverviewPage(QWidget):
         self.cpu_value_label = self._big_value_label("0%", _COLORS["accent"])
         cpu_inner = self._metric_widget(self.cpu_value_label, self.cpu_chart)
         self.cpu_card = create_card("处理器", cpu_inner)
-        grid.addWidget(self.cpu_card, 0, 0)
+        grid.addWidget(self.cpu_card, 1, 0)
 
         self.mem_chart = SmoothLineChart(
             title="内存",
@@ -492,9 +534,9 @@ class _OverviewPage(QWidget):
         self.mem_value_label = self._big_value_label("0%", _COLORS["green"])
         mem_inner = self._metric_widget(self.mem_value_label, self.mem_chart)
         self.mem_card = create_card("内存", mem_inner)
-        grid.addWidget(self.mem_card, 0, 1)
+        grid.addWidget(self.mem_card, 1, 1)
 
-        # Row 1 — GPU (full width)
+        # Row 2 — GPU (full width)
         self.gpu_chart = SmoothLineChart(
             title="显卡",
             color=QColor(_COLORS["purple"]),
@@ -507,9 +549,9 @@ class _OverviewPage(QWidget):
         """)
         gpu_inner = self._metric_widget(self.gpu_value_label, self.gpu_chart, self.gpu_info_label)
         self.gpu_card = create_card("显卡", gpu_inner)
-        grid.addWidget(self.gpu_card, 1, 0, 1, 2)
+        grid.addWidget(self.gpu_card, 2, 0, 1, 2)
 
-        # Row 2 — Disk + Network
+        # Row 3 — Disk + Network
         self.disk_chart = SmoothLineChart(
             title="磁盘",
             color=QColor(_COLORS["orange"]),
@@ -517,7 +559,7 @@ class _OverviewPage(QWidget):
         self.disk_value_label = self._big_value_label("0%", _COLORS["orange"])
         disk_inner = self._metric_widget(self.disk_value_label, self.disk_chart)
         self.disk_card = create_card("磁盘", disk_inner)
-        grid.addWidget(self.disk_card, 2, 0)
+        grid.addWidget(self.disk_card, 3, 0)
 
         self.net_chart = MultiLineChart(
             title="网络",
@@ -527,14 +569,15 @@ class _OverviewPage(QWidget):
         self.net_value_label = self._big_value_label("0 KB/s", _COLORS["teal"])
         net_inner = self._metric_widget(self.net_value_label, self.net_chart)
         self.net_card = create_card("网络", net_inner)
-        grid.addWidget(self.net_card, 2, 1)
+        grid.addWidget(self.net_card, 3, 1)
 
         # Uniform stretch
         grid.setColumnStretch(0, 1)
         grid.setColumnStretch(1, 1)
-        grid.setRowStretch(0, 1)
+        grid.setRowStretch(0, 0)
         grid.setRowStretch(1, 1)
         grid.setRowStretch(2, 1)
+        grid.setRowStretch(3, 1)
 
         scroll.setWidget(container)
 
@@ -1156,16 +1199,35 @@ class MonitorMainWindow(QMainWindow):
         except Exception:
             return  # silently skip on transient collector errors
 
+        # -- Agent section on overview page ----------------------------------
+        agents = data.get("agents", [])
+        capacity = data.get("capacity", {})
+
         # -- Status bar ------------------------------------------------------
         self._status_bar.update_metrics(
             cpu=data.get("cpu_percent", 0.0),
             mem=data.get("memory_percent", 0.0),
             gpu=data.get("gpu_util", 0.0),
             temp=data.get("gpu_temp", 0.0),
+            agent_count=len(agents),
         )
 
         # -- Overview page ---------------------------------------------------
         ov = self._overview_page
+
+        ov.agent_count_label.setText(f"{len(agents)} 个运行中")
+        ov.agent_parallel_label.setText(f"可并行: +{capacity.get('recommended_parallel', 0)}")
+
+        # Update agent list
+        agent_text_parts = []
+        for a in agents[:8]:  # show max 8
+            gpu_str = f"{a['gpu_memory_mb']:.0f}MB" if a['gpu_memory_mb'] > 0 else "—"
+            agent_text_parts.append(
+                f"{a['name']}  ·  CPU {a['cpu_percent']:.1f}%  ·  "
+                f"内存 {a['memory_mb']:.0f}MB  ·  GPU {gpu_str}"
+            )
+        ov.agent_list_label.setText("\n".join(agent_text_parts) if agent_text_parts else "无运行中的 Agent")
+
         cpu_pct = data.get("cpu_percent", 0.0)
         mem_pct = data.get("memory_percent", 0.0)
         gpu_pct = data.get("gpu_util", 0.0)
