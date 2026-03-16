@@ -32,6 +32,29 @@ jobs:
             mv "$APP_PATH" dist/ServerMonitor.app
           fi
 
+      - name: Strip unused Qt libraries
+        run: |
+          FRAMEWORKS="dist/ServerMonitor.app/Contents/Resources/lib/python3.11/PySide6/Qt/lib"
+          if [ -d "$FRAMEWORKS" ]; then
+            # 只保留 QtCore, QtGui, QtWidgets, QtDBus(QtWidgets依赖)
+            for f in "$FRAMEWORKS"/Qt*.framework; do
+              name=$(basename "$f" .framework)
+              case "$name" in
+                QtCore|QtGui|QtWidgets|QtDBus) ;;
+                *) echo "Removing $name" && rm -rf "$f" ;;
+              esac
+            done
+          fi
+          # 删除 Qt 翻译文件、多余插件
+          find dist/ServerMonitor.app -name "translations" -type d -exec rm -rf {} + 2>/dev/null || true
+          find dist/ServerMonitor.app -path "*/plugins/multimedia" -exec rm -rf {} + 2>/dev/null || true
+          find dist/ServerMonitor.app -path "*/plugins/sqldrivers" -exec rm -rf {} + 2>/dev/null || true
+          find dist/ServerMonitor.app -path "*/plugins/designer" -exec rm -rf {} + 2>/dev/null || true
+          find dist/ServerMonitor.app -path "*/plugins/qmltooling" -exec rm -rf {} + 2>/dev/null || true
+          # 显示最终大小
+          echo "App bundle size:"
+          du -sh dist/ServerMonitor.app
+
       - name: Create DMG
         run: |
           # 先创建临时 DMG 再转换，避免 "Resource busy" 问题
