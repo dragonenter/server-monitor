@@ -22,24 +22,19 @@ jobs:
       - name: Install dependencies
         run: pip install PySide6 psutil py2app
 
-      - name: Install desktop package locally
-        run: |
-          # 让 py2app 能找到 desktop 包
-          pip install -e .
-
       - name: Build app bundle with py2app
         run: python setup_mac.py py2app
 
       - name: Inject desktop package into bundle
         run: |
-          # py2app 对本地包支持不好，手动复制确保打入 bundle
-          RESOURCES="dist/$(ls dist/ | head -1)/Contents/Resources"
-          if [ ! -d "$RESOURCES/desktop" ]; then
-            echo "Copying desktop package into bundle..."
-            cp -r desktop "$RESOURCES/desktop"
-          fi
+          APP_DIR=$(ls -d dist/*.app | head -1)
+          RESOURCES="$APP_DIR/Contents/Resources"
+          echo "Copying desktop package into bundle..."
+          cp -r desktop "$RESOURCES/desktop"
+          # 清理 .pyc 缓存
+          find "$RESOURCES/desktop" -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
           echo "Verifying..."
-          ls "$RESOURCES/desktop/ui/"
+          find "$RESOURCES/desktop" -name "*.py" | sort
 
       - name: Rename app bundle
         run: |
