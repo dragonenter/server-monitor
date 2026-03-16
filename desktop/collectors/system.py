@@ -162,6 +162,13 @@ class SystemCollector:
         self._net_send_history = _HistoryBuffer()
         self._net_recv_history = _HistoryBuffer()
 
+        # 预热 psutil：第一次 cpu_percent(interval=0) 返回 0，需要先调一次
+        psutil.cpu_percent(interval=0)
+        psutil.cpu_percent(interval=0, percpu=True)
+        # 预热 network counters
+        self._prev_net_counters = psutil.net_io_counters()
+        self._prev_net_time = time.time()
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
@@ -522,7 +529,10 @@ class SystemCollector:
     # ------------------------------------------------------------------
 
     def collect(self) -> dict:
-        """一次性采集所有指标，返回 _refresh() 期望的 dict 格式."""
+        """一次性采集所有指标，返回 _refresh() 期望的 dict 格式.
+
+        字段名严格对应 main_window.py _refresh() 中的 data.get() 调用。
+        """
         cpu = self.collect_cpu()
         mem = self.collect_memory()
         gpus = self.collect_gpu()
@@ -543,37 +553,44 @@ class SystemCollector:
             disk_pct = disks[0].percent
 
         return {
-            "cpu_percent": cpu.percent_total,
-            "memory_percent": mem.percent,
-            "gpu_util": gpu0.utilization if gpu0 else 0.0,
-            "gpu_temp": gpu0.temperature if gpu0 else 0.0,
+            # CPU — CpuInfo.total_percent
+            "cpu_percent": cpu.total_percent,
+            # Memory — MemInfo.ram_percent
+            "memory_percent": mem.ram_percent,
+            # GPU — GpuInfo 字段带 _percent/_mb/_c/_w 后缀
+            "gpu_util": gpu0.utilization_percent or 0.0 if gpu0 else 0.0,
+            "gpu_temp": gpu0.temperature_c or 0.0 if gpu0 else 0.0,
             "gpu_name": gpu0.name if gpu0 else "—",
-            "gpu_memory_used": int(gpu0.memory_used) if gpu0 else 0,
-            "gpu_memory_total": int(gpu0.memory_total) if gpu0 else 0,
-            "gpu_power": gpu0.power_draw if gpu0 else 0.0,
+            "gpu_memory_used": int(gpu0.memory_used_mb or 0) if gpu0 else 0,
+            "gpu_memory_total": int(gpu0.memory_total_mb or 0) if gpu0 else 0,
+            "gpu_power": gpu0.power_draw_w or 0.0 if gpu0 else 0.0,
+            # Disk
             "disk_percent": disk_pct,
-            "net_download_speed": net.bytes_recv_per_sec,
-            "net_upload_speed": net.bytes_sent_per_sec,
-            "net_bytes_recv": net.total_recv,
-            "net_bytes_sent": net.total_sent,
+            # Network — NetInfo 字段: recv_rate_bytes_sec / send_rate_bytes_sec
+            "net_download_speed": net.recv_rate_bytes_sec,
+            "net_upload_speed": net.send_rate_bytes_sec,
+            "net_bytes_recv": net.bytes_recv,
+            "net_bytes_sent": net.bytes_sent,
+            # GPU processes — GpuProcessInfo
             "gpu_processes": [
                 {
                     "pid": p.pid,
-                    "name": p.name,
-                    "gpu_memory": p.gpu_memory,
+                    "name": p.process_name,
+                    "gpu_memory": p.gpu_memory_used_mb or 0,
                     "gpu_util": 0.0,
                 }
                 for p in gpu_procs
             ],
+            # Processes — ProcessInfo (no username/status fields)
             "processes": [
                 {
                     "pid": p.pid,
-                    "user": p.username,
+                    "user": "",
                     "name": p.name,
                     "cpu_percent": p.cpu_percent,
                     "memory_percent": p.memory_percent,
-                    "gpu_memory": p.gpu_memory or 0,
-                    "status": p.status,
+                    "gpu_memory": p.gpu_memory_mb or 0,
+                    "status": "",
                 }
                 for p in procs
             ],
