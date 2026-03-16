@@ -80,22 +80,9 @@ jobs:
 
       - name: Smoke test (import check)
         run: |
-          # 在打包环境中测试导入是否成功（不启动 GUI）
           RESOURCES="dist/ServerMonitor.app/Contents/Resources"
-          PYTHONPATH="$RESOURCES:$RESOURCES/lib/python3.11:$RESOURCES/lib/python3.11/lib-dynload" \
-            python3 -c "
-import sys
-sys.path.insert(0, '$RESOURCES')
-sys.path.insert(0, '$RESOURCES/lib/python3.11')
-from desktop.collectors.system import SystemCollector
-print('Import SystemCollector: OK')
-from desktop.ui.charts import SmoothLineChart
-print('Import SmoothLineChart: OK')
-print('All imports passed!')
-          " 2>&1 || {
-            echo "Import test failed"
-            cat ~/Desktop/ServerMonitor_crash.log 2>/dev/null || true
-            exit 1
+          PYTHONPATH="${RESOURCES}:${RESOURCES}/lib/python3.11" python3 -c "import desktop.ui.charts; import desktop.collectors.system; print('All imports OK')" || {
+            echo "Import test failed"; cat ~/Desktop/ServerMonitor_crash.log 2>/dev/null || true; exit 1
           }
 
       - name: Ad-hoc code sign
