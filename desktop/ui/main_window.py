@@ -1323,14 +1323,13 @@ class MonitorMainWindow(QMainWindow):
                 pid = p.get("pid", 0)
                 sr = p.get("send_rate", 0)
                 rr = p.get("recv_rate", 0)
-                if sr > 0 or rr > 0:
-                    lines.append(f"{name:<20s}  PID {pid:<8d}  ↑{self._format_speed(sr):>10s}  ↓{self._format_speed(rr):>10s}")
-                else:
-                    # macOS 无速率数据时，显示进程名和连接状态
-                    lines.append(f"{name:<20s}  PID {pid:<8d}  网络活跃")
+                lines.append(
+                    f"{name:<20s}  PID {pid:<8d}  "
+                    f"↑{self._format_speed(sr):>10s}  ↓{self._format_speed(rr):>10s}"
+                )
             np_.net_procs_label.setText("\n".join(lines))
         else:
-            np_.net_procs_label.setText("暂无进程网速数据")
+            np_.net_procs_label.setText("等待数据采集...")
 
     # ------------------------------------------------------------------ #
     # Private: window controls                                            #

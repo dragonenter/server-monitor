@@ -588,91 +588,147 @@ class SystemCollector:
         return results[:limit]
 
     def _collect_net_processes_mac(self, limit: int = 5) -> list[NetProcessInfo]:
-        """macOS: 用 lsof + io delta 追踪有网络连接的进程流量.
+        """macOS: 用 netstat -b + lsof 计算真实的 per-process 网速.
 
-        策略:
-        1. lsof -i -n -P 列出有网络连接的进程（不需要 root）
-        2. 对这些进程追踪 psutil.Process.memory_info 的 RSS 变化作为活跃度参考
-        3. 按连接数排序（macOS 无法获取 per-process 网速）
+        1. lsof -i -n -P 获取 PID -> 本地端口 映射
+        2. netstat -b -n 获取 每个连接的 rxbytes/txbytes
+        3. 按本地端口关联，汇总每个 PID 的总字节数
+        4. 与上次采集对比计算速率
         """
-        # 用 lsof 获取有网络连接的进程
-        pid_conns: dict[int, tuple[str, int]] = {}  # pid -> (name, connection_count)
+        # Step 1: lsof 获取 PID -> (name, set of local_ports)
+        pid_info: dict[int, tuple[str, set]] = {}  # pid -> (name, {port1, port2, ...})
         try:
             out = subprocess.run(
                 ["lsof", "-i", "-n", "-P", "-F", "pcn"],
                 capture_output=True, text=True, timeout=5,
             )
             if out.returncode == 0 and out.stdout:
-                current_pid = None
-                current_name = ""
+                cur_pid = None
+                cur_name = ""
                 for line in out.stdout.strip().split("\n"):
                     if line.startswith("p"):
                         try:
-                            current_pid = int(line[1:])
+                            cur_pid = int(line[1:])
                         except ValueError:
-                            current_pid = None
-                    elif line.startswith("c") and current_pid is not None:
-                        current_name = line[1:]
-                    elif line.startswith("n") and current_pid is not None:
-                        if current_pid in pid_conns:
-                            old_name, old_count = pid_conns[current_pid]
-                            pid_conns[current_pid] = (old_name, old_count + 1)
-                        else:
-                            pid_conns[current_pid] = (current_name, 1)
+                            cur_pid = None
+                    elif line.startswith("c") and cur_pid is not None:
+                        cur_name = line[1:]
+                    elif line.startswith("n") and cur_pid is not None:
+                        # n192.168.1.5:12345->142.250.0.1:443 or n*:8080
+                        addr = line[1:]
+                        # 提取本地端口
+                        local_part = addr.split("->")[0] if "->" in addr else addr
+                        colon_idx = local_part.rfind(":")
+                        if colon_idx > 0:
+                            try:
+                                port = int(local_part[colon_idx + 1:])
+                                if cur_pid not in pid_info:
+                                    pid_info[cur_pid] = (cur_name, set())
+                                pid_info[cur_pid][1].add(port)
+                            except ValueError:
+                                pass
         except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
             pass
 
-        if not pid_conns:
-            # lsof 也失败了，尝试遍历进程
-            try:
-                for proc in psutil.process_iter(['pid', 'name']):
-                    try:
-                        conns = proc.connections()
-                        if conns:
-                            pid_conns[proc.pid] = (proc.name(), len(conns))
-                    except (psutil.AccessDenied, psutil.NoSuchProcess,
-                            psutil.ZombieProcess):
+        if not pid_info:
+            return []
+
+        # Step 2: netstat -b -n 获取每个连接的字节数
+        # 格式: Proto Recv-Q Send-Q Local Address Foreign Address (state) rxbytes txbytes
+        port_bytes: dict[int, tuple[int, int]] = {}  # local_port -> (rx_total, tx_total)
+        try:
+            out2 = subprocess.run(
+                ["netstat", "-b", "-n", "-p", "tcp"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if out2.returncode == 0:
+                for line in out2.stdout.strip().split("\n"):
+                    parts = line.split()
+                    if len(parts) < 7 or parts[0] not in ("tcp4", "tcp6"):
                         continue
-            except Exception:
-                pass
+                    local_addr = parts[3]
+                    colon = local_addr.rfind(".")
+                    if colon <= 0:
+                        continue
+                    try:
+                        port = int(local_addr[colon + 1:])
+                        rx = int(parts[-2])
+                        tx = int(parts[-1])
+                        if port in port_bytes:
+                            old_rx, old_tx = port_bytes[port]
+                            port_bytes[port] = (old_rx + rx, old_tx + tx)
+                        else:
+                            port_bytes[port] = (rx, tx)
+                    except (ValueError, IndexError):
+                        continue
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            pass
 
-        # 构建结果：追踪 IO delta（如果可用）
+        # UDP
+        try:
+            out3 = subprocess.run(
+                ["netstat", "-b", "-n", "-p", "udp"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if out3.returncode == 0:
+                for line in out3.stdout.strip().split("\n"):
+                    parts = line.split()
+                    if len(parts) < 5 or parts[0] not in ("udp4", "udp6"):
+                        continue
+                    local_addr = parts[3]
+                    colon = local_addr.rfind(".")
+                    if colon <= 0:
+                        continue
+                    try:
+                        port = int(local_addr[colon + 1:])
+                        rx = int(parts[-2])
+                        tx = int(parts[-1])
+                        if port in port_bytes:
+                            old_rx, old_tx = port_bytes[port]
+                            port_bytes[port] = (old_rx + rx, old_tx + tx)
+                        else:
+                            port_bytes[port] = (rx, tx)
+                    except (ValueError, IndexError):
+                        continue
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            pass
+
+        # Step 3: 汇总每个 PID 的总字节数
+        now = time.time()
         results: list[NetProcessInfo] = []
-        active_pids: set[int] = set()
 
-        for pid, (name, conn_count) in pid_conns.items():
-            active_pids.add(pid)
+        for pid, (name, ports) in pid_info.items():
+            total_rx = 0
+            total_tx = 0
+            for port in ports:
+                if port in port_bytes:
+                    rx, tx = port_bytes[port]
+                    total_rx += rx
+                    total_tx += tx
+
+            # Step 4: 与上次对比计算速率
             send_rate = 0.0
             recv_rate = 0.0
-            now = time.time()
+            if pid in self._proc_net_prev:
+                prev_time, prev_tx, prev_rx = self._proc_net_prev[pid]
+                dt = now - prev_time
+                if dt > 0:
+                    send_rate = max(0, (total_tx - prev_tx) / dt)
+                    recv_rate = max(0, (total_rx - prev_rx) / dt)
 
-            # macOS 上部分进程可能支持 io_counters
-            try:
-                proc = psutil.Process(pid)
-                io = proc.io_counters()
-                if pid in self._proc_net_prev:
-                    prev_time, prev_sent, prev_recv = self._proc_net_prev[pid]
-                    dt = now - prev_time
-                    if dt > 0:
-                        send_rate = max(0, (io.write_bytes - prev_sent) / dt)
-                        recv_rate = max(0, (io.read_bytes - prev_recv) / dt)
-                self._proc_net_prev[pid] = (now, io.write_bytes, io.read_bytes)
-            except (psutil.NoSuchProcess, psutil.AccessDenied,
-                    psutil.ZombieProcess, AttributeError):
-                # io_counters 不可用，用连接数作为排序权重
-                send_rate = 0.0
-                recv_rate = 0.0
+            self._proc_net_prev[pid] = (now, total_tx, total_rx)
 
-            results.append(NetProcessInfo(
-                pid=pid, name=name,
-                send_rate=send_rate, recv_rate=recv_rate,
-                total_rate=send_rate + recv_rate if (send_rate + recv_rate) > 0 else float(conn_count),
-            ))
+            if total_rx > 0 or total_tx > 0 or send_rate > 0 or recv_rate > 0:
+                results.append(NetProcessInfo(
+                    pid=pid, name=name,
+                    send_rate=send_rate, recv_rate=recv_rate,
+                    total_rate=send_rate + recv_rate,
+                ))
 
         # 清理已退出进程
-        stale = [p for p in self._proc_net_prev if p not in active_pids]
-        for p in stale:
-            del self._proc_net_prev[p]
+        active = {pid for pid in pid_info}
+        for pid in [p for p in self._proc_net_prev if p not in active]:
+            del self._proc_net_prev[pid]
 
         results.sort(key=lambda x: x.total_rate, reverse=True)
         return results[:limit]
