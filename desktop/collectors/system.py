@@ -541,7 +541,17 @@ class SystemCollector:
     # ------------------------------------------------------------------
 
     def collect_net_processes(self, limit: int = 5) -> list[NetProcessInfo]:
-        """采集网速 Top N 进程（基于有网络连接的进程的 IO 计数器增量）."""
+        """采集网速 Top N 进程.
+
+        Linux: 用 psutil io_counters 差值。
+        macOS: 用 nettop 命令（psutil 在 macOS 上无 per-process IO）。
+        """
+        if self._is_mac:
+            return self._collect_net_processes_mac(limit)
+        return self._collect_net_processes_linux(limit)
+
+    def _collect_net_processes_linux(self, limit: int = 5) -> list[NetProcessInfo]:
+        """Linux: 基于 psutil io_counters 差值."""
         results: list[NetProcessInfo] = []
         active_pids: set[int] = set()
         try:
@@ -558,29 +568,93 @@ class SystemCollector:
                         prev_time, prev_sent, prev_recv = self._proc_net_prev[pid]
                         dt = now - prev_time
                         if dt > 0:
-                            send_rate = (io.write_bytes - prev_sent) / dt
-                            recv_rate = (io.read_bytes - prev_recv) / dt
-                            send_rate = max(0, send_rate)
-                            recv_rate = max(0, recv_rate)
+                            send_rate = max(0, (io.write_bytes - prev_sent) / dt)
+                            recv_rate = max(0, (io.read_bytes - prev_recv) / dt)
                             results.append(NetProcessInfo(
-                                pid=pid,
-                                name=proc.name(),
-                                send_rate=send_rate,
-                                recv_rate=recv_rate,
+                                pid=pid, name=proc.name(),
+                                send_rate=send_rate, recv_rate=recv_rate,
                                 total_rate=send_rate + recv_rate,
                             ))
                     self._proc_net_prev[pid] = (now, io.write_bytes, io.read_bytes)
-                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess, AttributeError):
+                except (psutil.NoSuchProcess, psutil.AccessDenied,
+                        psutil.ZombieProcess, AttributeError):
                     continue
         except Exception:
             pass
+        stale = [p for p in self._proc_net_prev if p not in active_pids]
+        for p in stale:
+            del self._proc_net_prev[p]
+        results.sort(key=lambda x: x.total_rate, reverse=True)
+        return results[:limit]
 
-        # Clean up stale PIDs
-        stale = [pid for pid in self._proc_net_prev if pid not in active_pids]
-        for pid in stale:
-            del self._proc_net_prev[pid]
+    def _collect_net_processes_mac(self, limit: int = 5) -> list[NetProcessInfo]:
+        """macOS: 用 nettop 解析 per-process 网络流量."""
+        try:
+            # nettop -P -L 1 -k time,interface,state,rx_dupe,rx_ooo,re-tx,rtt_avg,rcvsize,tx_retransmit_bytes -n
+            # -P: show by process, -L 1: one sample, -n: no DNS resolve
+            out = subprocess.run(
+                ["nettop", "-P", "-L", "1", "-n", "-x"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if out.returncode != 0 or not out.stdout:
+                return self._collect_net_processes_mac_fallback(limit)
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            return self._collect_net_processes_mac_fallback(limit)
+
+        results: list[NetProcessInfo] = []
+        for line in out.stdout.strip().split("\n"):
+            # nettop -x 格式: process.pid, bytes_in, bytes_out, ...
+            parts = line.split(",")
+            if len(parts) < 3:
+                continue
+            proc_field = parts[0].strip()
+            # 进程名.pid 格式, e.g. "Safari.1234"
+            dot_idx = proc_field.rfind(".")
+            if dot_idx <= 0:
+                continue
+            name = proc_field[:dot_idx]
+            try:
+                pid = int(proc_field[dot_idx + 1:])
+            except ValueError:
+                continue
+            try:
+                bytes_in = float(parts[1].strip())
+                bytes_out = float(parts[2].strip())
+            except (ValueError, IndexError):
+                continue
+            if bytes_in <= 0 and bytes_out <= 0:
+                continue
+            results.append(NetProcessInfo(
+                pid=pid, name=name,
+                send_rate=bytes_out, recv_rate=bytes_in,
+                total_rate=bytes_in + bytes_out,
+            ))
 
         results.sort(key=lambda x: x.total_rate, reverse=True)
+        return results[:limit]
+
+    def _collect_net_processes_mac_fallback(self, limit: int = 5) -> list[NetProcessInfo]:
+        """macOS fallback: 用 psutil net_connections 找活跃进程."""
+        results: list[NetProcessInfo] = []
+        try:
+            seen: set[int] = set()
+            for conn in psutil.net_connections(kind='inet'):
+                pid = conn.pid
+                if pid is None or pid <= 0 or pid in seen:
+                    continue
+                seen.add(pid)
+                try:
+                    proc = psutil.Process(pid)
+                    mem = proc.memory_info()
+                    # 无法获取实际网络速率，用连接状态标记活跃进程
+                    results.append(NetProcessInfo(
+                        pid=pid, name=proc.name(),
+                        send_rate=0, recv_rate=0, total_rate=0,
+                    ))
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    continue
+        except (psutil.AccessDenied, OSError):
+            pass
         return results[:limit]
 
     def collect_processes(self, limit: int = 20) -> list[ProcessInfo]:
