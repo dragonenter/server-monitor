@@ -69,6 +69,16 @@ class GpuInfo:
 
 
 @dataclass
+class NetProcessInfo:
+    """进程网络速率."""
+    pid: int = 0
+    name: str = ""
+    send_rate: float = 0.0   # bytes/sec
+    recv_rate: float = 0.0   # bytes/sec
+    total_rate: float = 0.0  # send + recv bytes/sec
+
+
+@dataclass
 class GpuProcessInfo:
     """A single process using GPU compute resources."""
 
@@ -191,6 +201,9 @@ class SystemCollector:
 
         # Agent memory trend tracking: pid -> [(timestamp, mem_mb)]
         self._agent_mem_history: dict[int, list[tuple[float, float]]] = {}
+
+        # Per-process network rate tracking: pid -> (timestamp, bytes_sent, bytes_recv)
+        self._proc_net_prev: dict[int, tuple[float, int, int]] = {}
 
         # 预热 psutil：第一次 cpu_percent(interval=0) 返回 0，需要先调一次
         psutil.cpu_percent(interval=0)
@@ -526,6 +539,49 @@ class SystemCollector:
     # ------------------------------------------------------------------
     # Processes
     # ------------------------------------------------------------------
+
+    def collect_net_processes(self, limit: int = 5) -> list[NetProcessInfo]:
+        """采集网速 Top N 进程（基于有网络连接的进程的 IO 计数器增量）."""
+        results: list[NetProcessInfo] = []
+        active_pids: set[int] = set()
+        try:
+            for proc in psutil.process_iter(['pid', 'name']):
+                try:
+                    conns = proc.connections()
+                    if not conns:
+                        continue
+                    io = proc.io_counters()
+                    pid = proc.pid
+                    active_pids.add(pid)
+                    now = time.time()
+                    if pid in self._proc_net_prev:
+                        prev_time, prev_sent, prev_recv = self._proc_net_prev[pid]
+                        dt = now - prev_time
+                        if dt > 0:
+                            send_rate = (io.write_bytes - prev_sent) / dt
+                            recv_rate = (io.read_bytes - prev_recv) / dt
+                            send_rate = max(0, send_rate)
+                            recv_rate = max(0, recv_rate)
+                            results.append(NetProcessInfo(
+                                pid=pid,
+                                name=proc.name(),
+                                send_rate=send_rate,
+                                recv_rate=recv_rate,
+                                total_rate=send_rate + recv_rate,
+                            ))
+                    self._proc_net_prev[pid] = (now, io.write_bytes, io.read_bytes)
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess, AttributeError):
+                    continue
+        except Exception:
+            pass
+
+        # Clean up stale PIDs
+        stale = [pid for pid in self._proc_net_prev if pid not in active_pids]
+        for pid in stale:
+            del self._proc_net_prev[pid]
+
+        results.sort(key=lambda x: x.total_rate, reverse=True)
+        return results[:limit]
 
     def collect_processes(self, limit: int = 20) -> list[ProcessInfo]:
         """Top *limit* processes sorted by CPU%, with optional GPU memory."""
@@ -921,6 +977,12 @@ class SystemCollector:
             "net_upload_speed": net.send_rate_bytes_sec,
             "net_bytes_recv": net.bytes_recv,
             "net_bytes_sent": net.bytes_sent,
+            # Net processes — NetProcessInfo (top 5 by network speed)
+            "net_processes": [
+                {"pid": p.pid, "name": p.name, "send_rate": p.send_rate,
+                 "recv_rate": p.recv_rate, "total_rate": p.total_rate}
+                for p in self.collect_net_processes(limit=5)
+            ],
             # GPU processes — GpuProcessInfo
             "gpu_processes": [
                 {

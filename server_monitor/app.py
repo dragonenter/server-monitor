@@ -301,6 +301,8 @@ class ServerMonitorApp(App):
             agents = self.collector.collect_agents()
             capacity = self.collector.calculate_capacity()
 
+            net_procs = self.collector.collect_net_processes(limit=5)
+
             self._update_agents(agents, capacity)
             self._update_agent_detail(agents, capacity)
             self._update_cpu(cpu)
@@ -308,8 +310,8 @@ class ServerMonitorApp(App):
             self._update_gpu_overview(gpus, gpu_procs)
             self._update_gpu_detail(gpus, gpu_procs)
             self._update_disk(disks)
-            self._update_network(net)
-            self._update_net_detail(net)
+            self._update_network(net, net_procs)
+            self._update_net_detail(net, net_procs)
             self._update_processes(procs)
             self._check_alerts(cpu, mem, gpus)
             self._update_header()
@@ -642,12 +644,21 @@ class ServerMonitorApp(App):
     # 网络（总览卡片）
     # ------------------------------------------------------------------
 
-    def _update_network(self, net) -> None:
+    def _update_network(self, net, net_procs=None) -> None:
         try:
-            self.query_one("#net-text", Label).update(
-                f"  ↑ 上传  {fmt_rate(net.bytes_sent_per_sec):>12s}   累计 {fmt_bytes(net.total_sent)}\n"
-                f"  ↓ 下载  {fmt_rate(net.bytes_recv_per_sec):>12s}   累计 {fmt_bytes(net.total_recv)}"
-            )
+            lines = [
+                f"  ↑ 上传  {fmt_rate(net.bytes_sent_per_sec):>12s}   累计 {fmt_bytes(net.total_sent)}",
+                f"  ↓ 下载  {fmt_rate(net.bytes_recv_per_sec):>12s}   累计 {fmt_bytes(net.total_recv)}",
+            ]
+            if net_procs:
+                lines.append("")
+                lines.append("  网速 Top 5:")
+                for p in net_procs:
+                    lines.append(
+                        f"    {p.name[:20]:<20s}  PID {p.pid:<8d}  "
+                        f"↑{fmt_rate(p.send_rate):>10s}  ↓{fmt_rate(p.recv_rate):>10s}"
+                    )
+            self.query_one("#net-text", Label).update("\n".join(lines))
 
             # 网络总流量曲线
             send = self.collector.get_net_send_history()
@@ -664,19 +675,32 @@ class ServerMonitorApp(App):
     # 网络详情
     # ------------------------------------------------------------------
 
-    def _update_net_detail(self, net) -> None:
+    def _update_net_detail(self, net, net_procs=None) -> None:
         try:
             send_hist = self.collector.get_net_send_history()
             recv_hist = self.collector.get_net_recv_history()
             send_peak = max(send_hist) if send_hist else 0
             recv_peak = max(recv_hist) if recv_hist else 0
 
-            self.query_one("#net-detail-text", Label).update(
+            lines = [
                 f"  ↑ 上传速率  {fmt_rate(net.bytes_sent_per_sec):>12s}   "
-                f"累计发送 {fmt_bytes(net.total_sent)}   峰值 {fmt_rate(send_peak)}\n"
+                f"累计发送 {fmt_bytes(net.total_sent)}   峰值 {fmt_rate(send_peak)}",
                 f"  ↓ 下载速率  {fmt_rate(net.bytes_recv_per_sec):>12s}   "
-                f"累计接收 {fmt_bytes(net.total_recv)}   峰值 {fmt_rate(recv_peak)}"
-            )
+                f"累计接收 {fmt_bytes(net.total_recv)}   峰值 {fmt_rate(recv_peak)}",
+            ]
+            if net_procs:
+                lines.append("")
+                lines.append("  ── 网速排行 Top 5 ──────────────────────────────────")
+                lines.append(
+                    f"  {'进程':<20s}  {'PID':<8s}  {'↑上传':>10s}  {'↓下载':>10s}"
+                )
+                lines.append(f"  {'─'*20}  {'─'*8}  {'─'*10}  {'─'*10}")
+                for p in net_procs:
+                    lines.append(
+                        f"  {p.name[:20]:<20s}  {p.pid:<8d}  "
+                        f"{fmt_rate(p.send_rate):>10s}  {fmt_rate(p.recv_rate):>10s}"
+                    )
+            self.query_one("#net-detail-text", Label).update("\n".join(lines))
 
             self._update_chart(
                 "#net-send-chart", send_hist,

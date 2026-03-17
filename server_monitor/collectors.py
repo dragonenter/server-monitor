@@ -63,6 +63,16 @@ class NetInfo:
 
 
 @dataclass
+class NetProcessInfo:
+    """进程网络速率."""
+    pid: int = 0
+    name: str = ""
+    send_rate: float = 0.0   # bytes/sec
+    recv_rate: float = 0.0   # bytes/sec
+    total_rate: float = 0.0  # send + recv bytes/sec
+
+
+@dataclass
 class GpuProcessInfo:
     pid: int = 0
     name: str = ""
@@ -144,6 +154,7 @@ class MetricsCollector:
         self._net_recv_history: list[float] = []
         self._history_max = 60  # 60 seconds
         self._agent_mem_history: dict[int, list[tuple[float, float]]] = {}  # pid -> [(timestamp, mem_mb)]
+        self._proc_net_prev: dict[int, tuple[float, int, int]] = {}  # pid -> (timestamp, bytes_sent, bytes_recv)
 
     def _detect_gpu_backend(self) -> str:
         if platform.system() == "Darwin" and platform.machine() == "arm64":
@@ -389,6 +400,50 @@ class MetricsCollector:
             total_sent=current.bytes_sent,
             total_recv=current.bytes_recv,
         )
+
+    def collect_net_processes(self, limit: int = 5) -> list[NetProcessInfo]:
+        """采集网速 Top N 进程（基于有网络连接的进程的 IO 计数器增量）."""
+        ps = self.psutil
+        results: list[NetProcessInfo] = []
+        active_pids: set[int] = set()
+        try:
+            for proc in ps.process_iter(['pid', 'name']):
+                try:
+                    conns = proc.connections()
+                    if not conns:
+                        continue
+                    io = proc.io_counters()
+                    pid = proc.pid
+                    active_pids.add(pid)
+                    now = time.time()
+                    if pid in self._proc_net_prev:
+                        prev_time, prev_sent, prev_recv = self._proc_net_prev[pid]
+                        dt = now - prev_time
+                        if dt > 0:
+                            send_rate = (io.write_bytes - prev_sent) / dt
+                            recv_rate = (io.read_bytes - prev_recv) / dt
+                            send_rate = max(0, send_rate)
+                            recv_rate = max(0, recv_rate)
+                            results.append(NetProcessInfo(
+                                pid=pid,
+                                name=proc.name(),
+                                send_rate=send_rate,
+                                recv_rate=recv_rate,
+                                total_rate=send_rate + recv_rate,
+                            ))
+                    self._proc_net_prev[pid] = (now, io.write_bytes, io.read_bytes)
+                except (ps.NoSuchProcess, ps.AccessDenied, ps.ZombieProcess, AttributeError):
+                    continue
+        except Exception:
+            pass
+
+        # Clean up stale PIDs
+        stale = [pid for pid in self._proc_net_prev if pid not in active_pids]
+        for pid in stale:
+            del self._proc_net_prev[pid]
+
+        results.sort(key=lambda x: x.total_rate, reverse=True)
+        return results[:limit]
 
     def collect_processes(self, limit: int = 15) -> list[ProcessInfo]:
         procs = []

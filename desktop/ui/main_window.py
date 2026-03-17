@@ -828,6 +828,17 @@ class _NetworkPage(QWidget):
         combined_card = create_card("网络总览", self.combined_chart)
         layout.addWidget(combined_card, stretch=1)
 
+        # Net processes top 5
+        self.net_procs_label = QLabel("暂无进程网速数据")
+        self.net_procs_label.setWordWrap(True)
+        self.net_procs_label.setStyleSheet(f"""
+            color: {_COLORS["text_secondary"]}; font-size: 13px;
+            font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
+            background: transparent; border: none;
+        """)
+        net_procs_card = create_card("网速排行 Top 5", self.net_procs_label)
+        layout.addWidget(net_procs_card)
+
         scroll.setWidget(container)
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -1302,6 +1313,20 @@ class MonitorMainWindow(QMainWindow):
         np_.dl_chart.add_point(dl_speed / 1024)  # chart in KB/s
         np_.ul_chart.add_point(ul_speed / 1024)
         np_.combined_chart.add_points([dl_speed / 1024, ul_speed / 1024])
+
+        # Net processes top 5
+        net_procs = data.get("net_processes", [])
+        if net_procs:
+            lines = []
+            for p in net_procs:
+                name = p.get("name", "")[:20]
+                pid = p.get("pid", 0)
+                sr = self._format_speed(p.get("send_rate", 0))
+                rr = self._format_speed(p.get("recv_rate", 0))
+                lines.append(f"{name:<20s}  PID {pid:<8d}  ↑{sr:>10s}  ↓{rr:>10s}")
+            np_.net_procs_label.setText("\n".join(lines))
+        else:
+            np_.net_procs_label.setText("暂无进程网速数据")
 
     # ------------------------------------------------------------------ #
     # Private: window controls                                            #
